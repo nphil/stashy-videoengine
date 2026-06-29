@@ -117,7 +117,7 @@ build_one() {
       --enable-static --disable-shared --enable-pic --enable-small \
       --disable-programs --disable-doc --disable-debug \
       --disable-gpl --disable-nonfree \
-      --disable-postproc --disable-avdevice \
+      --disable-avdevice \
       --disable-lzma \
       --enable-videotoolbox \
       --enable-securetransport \
