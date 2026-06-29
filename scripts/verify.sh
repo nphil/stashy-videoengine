@@ -98,9 +98,9 @@ xcrun --sdk iphonesimulator clang -target "$SIM_TRIPLE" \
   -I "$THIN/iphonesimulator/include" \
   -L "$THIN/iphonesimulator/lib" \
   -lavformat -lavfilter -lavcodec -lswscale -lswresample -lavutil \
-  -lz \
+  -lz -lbz2 -liconv \
   -framework VideoToolbox -framework CoreMedia -framework CoreVideo \
-  -framework CoreFoundation \
+  -framework CoreFoundation -framework Security -framework AudioToolbox \
   -o "$WORK/smoke" \
   && pass "smoke test linked" \
   || fail "smoke test failed to link"

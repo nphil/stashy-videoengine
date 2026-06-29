@@ -32,15 +32,15 @@ DIST="$BUILD_DIR/dist"           # zipped artifacts + checksums.txt
 # The 6 libraries we ship. Order matters for link/dependency clarity.
 LIBS=(libavutil libavcodec libavformat libavfilter libswscale libswresample)
 
-# --- Lean component set (LGPL-minimal + VideoToolbox) ----------------------
-ENCODERS="h264_videotoolbox,hevc_videotoolbox,aac"
-DECODERS="h264,hevc,vp9,vp8,av1,mpeg4,mpeg2video,vc1,theora,aac,ac3,eac3,opus,vorbis,flac,mp3,pcm_s16le,pcm_s16be"
-PARSERS="h264,hevc,vp9,vp8,av1,mpeg4video,aac,ac3,opus,vorbis,flac,mpegaudio"
-DEMUXERS="matroska,mov,avi,flv,mpegts,asf,ogg,hls,aac,mp3,flac,wav"
-MUXERS="mov,mp4,mpegts"
-BSFS="h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc"
-PROTOCOLS="file,pipe"
-FILTERS="scale,format,aresample,anull,null"
+# Comprehensive LGPL build (v1.1.0+). Rather than an allow-list, we build the
+# FULL non-GPL component set: ALL built-in filters (incl. the VideoToolbox
+# hardware filters scale_vt/transpose_vt/yadif_vt/tonemap_vt), all built-in
+# decoders/demuxers/muxers/parsers/bsfs, plus the external-library filters
+# (zscale via libzimg; drawtext via libfreetype+libharfbuzz+libfribidi;
+# subtitles/ass via libass). GPL stays OFF (no --enable-gpl, no postproc, no
+# x264/x265), so this is LGPL-clean. Static dead-strip means the consuming app
+# only links the components it actually calls — a large catalog here does not
+# bloat the app; it just means the app never needs another FFmpeg rebuild.
 
 log() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 
@@ -100,19 +100,11 @@ build_one() {
       --enable-static --disable-shared --enable-pic --enable-small \
       --disable-programs --disable-doc --disable-debug \
       --disable-gpl --disable-nonfree \
-      --disable-bzlib --disable-iconv --disable-lzma \
+      --disable-postproc --disable-avdevice \
+      --disable-lzma \
       --enable-videotoolbox \
-      --disable-everything \
-      --enable-avcodec --enable-avformat --enable-avfilter \
-      --enable-swscale --enable-swresample \
-      --enable-encoder="$ENCODERS" \
-      --enable-decoder="$DECODERS" \
-      --enable-parser="$PARSERS" \
-      --enable-demuxer="$DEMUXERS" \
-      --enable-muxer="$MUXERS" \
-      --enable-bsf="$BSFS" \
-      --enable-protocol="$PROTOCOLS" \
-      --enable-filter="$FILTERS" )
+      --enable-securetransport \
+      --enable-encoder=h264_videotoolbox,hevc_videotoolbox )
 
   log "Building $sdk slice"
   make -C "$builddir" -j"$(sysctl -n hw.ncpu)"
