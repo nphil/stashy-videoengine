@@ -23,7 +23,7 @@ OUT="$BUILD_DIR/xcframeworks"
 THIN="$BUILD_DIR/thin"
 TESTDIR="$ROOT/test"
 WORK="$BUILD_DIR/verify"
-MIN_IOS_VERSION="${MIN_IOS_VERSION:-15.0}"
+MIN_IOS_VERSION="${MIN_IOS_VERSION:-16.0}"
 SIM_TRIPLE="arm64-apple-ios${MIN_IOS_VERSION}-simulator"
 
 LIBS=(libavutil libavcodec libavformat libavfilter libswscale libswresample)
@@ -52,15 +52,38 @@ done
 # than `nm | grep -q`. Under `set -o pipefail`, grep -q closes the pipe on its
 # first match, nm dies with SIGPIPE (141), and pipefail would report the whole
 # pipeline as failed even though the symbol WAS found.
-log "Checking compiled-in encoders (nm)"
+log "Checking compiled-in encoders/decoders (nm, device slice)"
 codec="$THIN/iphoneos/lib/libavcodec.a"
 codec_syms="$(xcrun nm "$codec" 2>/dev/null || true)"
-for sym in ff_h264_videotoolbox_encoder ff_hevc_videotoolbox_encoder ff_aac_encoder; do
+for sym in ff_h264_videotoolbox_encoder ff_hevc_videotoolbox_encoder \
+           ff_prores_videotoolbox_encoder ff_aac_encoder \
+           ff_libdav1d_decoder ff_pgssub_decoder ff_dvdsub_decoder ff_dvbsub_decoder; do
   case "$codec_syms" in
     *"$sym"*) pass "$sym present" ;;
-    *) echo "  encoder-ish symbols present in libavcodec.a:"
-       printf '%s\n' "$codec_syms" | grep -iE 'videotoolbox|aac_encoder' | head -20 || true
-       fail "encoder symbol $sym not found in libavcodec.a" ;;
+    *) echo "  encoder/decoder-ish symbols present in libavcodec.a:"
+       printf '%s\n' "$codec_syms" | grep -iE 'videotoolbox|aac_encoder|dav1d|pgssub|dvdsub|dvbsub' | head -20 || true
+       fail "symbol $sym not found in libavcodec.a" ;;
+  esac
+done
+# Confirm libdav1d.a actually got merged INTO libavcodec.a (not just the FFmpeg
+# wrapper object) — the dav1d implementation symbols must resolve in-archive, or
+# the consuming app link fails with undefined _dav1d_*.
+case "$codec_syms" in
+  *dav1d_open*) pass "dav1d implementation merged into libavcodec.a" ;;
+  *) fail "dav1d_open absent from libavcodec.a — libdav1d merge missing (app link would fail)" ;;
+esac
+
+# The VideoToolbox hardware scale/rotate filters need iOS-16 APIs; confirm the
+# min-iOS-16 build actually compiled them into the device slice's libavfilter.
+log "Checking compiled-in VideoToolbox filters (nm, device slice)"
+filt="$THIN/iphoneos/lib/libavfilter.a"
+filt_syms="$(xcrun nm "$filt" 2>/dev/null || true)"
+for sym in ff_vf_scale_vt ff_vf_transpose_vt ff_vf_yadif_videotoolbox; do
+  case "$filt_syms" in
+    *"$sym"*) pass "$sym present" ;;
+    *) echo "  *_vt / _videotoolbox filter symbols present in libavfilter.a:"
+       printf '%s\n' "$filt_syms" | grep -iE '_vt|videotoolbox' | head -20 || true
+       fail "filter symbol $sym not found in libavfilter.a (min iOS 16 should enable scale_vt/transpose_vt)" ;;
   esac
 done
 

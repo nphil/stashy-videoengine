@@ -3,9 +3,10 @@
 // actually registered at runtime. Built for the arm64 iOS simulator, run via
 // `xcrun simctl spawn`. Returns non-zero if any required component is missing.
 //
-// Only LGPL components present at min-iOS 15.0 are asserted. Notable omissions
-// are intentional: hqdn3d/eq are GPL; scale_vt/transpose_vt need iOS 16 APIs
-// (VTPixelTransfer/RotationSession); tonemap_vt does not exist in FFmpeg 7.1.
+// FFmpeg 8.1.2, min iOS 16. Only LGPL components are asserted. Notable
+// omissions are intentional: hqdn3d/eq/cropdetect are GPL; tonemap_vt does not
+// exist in FFmpeg (software tonemap + zscale cover HDR->SDR). At min iOS 16 the
+// VideoToolbox scale_vt/transpose_vt filters ARE available and asserted below.
 #include <stdio.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -38,9 +39,10 @@ static void need_muxer(const char *n) {
 int main(void) {
     printf("avutil version : %s\n", av_version_info());
 
-    // Encoders: hardware video + audio + soft-subtitle mux.
+    // Encoders: hardware video (incl. new ProRes) + audio + soft-subtitle mux.
     need_encoder("h264_videotoolbox");
     need_encoder("hevc_videotoolbox");
+    need_encoder("prores_videotoolbox");  // new VideoToolbox encoder in 8.x
     need_encoder("aac");
     need_encoder("mov_text");
 
@@ -49,10 +51,12 @@ int main(void) {
     need_decoder("truehd");
     need_decoder("mlp");
     need_decoder("alac");
-    need_decoder("pgssub");     // HDMV PGS subtitles
+    need_decoder("libdav1d");   // fast AV1 software decode (vs built-in av1)
+    need_decoder("pgssub");     // HDMV PGS bitmap subtitles
+    need_decoder("dvdsub");     // DVD bitmap subtitles
+    need_decoder("dvbsub");     // DVB bitmap subtitles
     need_decoder("subrip");
     need_decoder("webvtt");
-    need_decoder("dvbsub");
     need_decoder("ass");
 
     // Filters: built-in (LGPL) + VideoToolbox hardware + external-library.
@@ -76,10 +80,18 @@ int main(void) {
     need_filter("overlay");
     need_filter("hstack");
     need_filter("vstack");
+    need_filter("setpts");
     need_filter("yadif_videotoolbox");  // VideoToolbox hardware deinterlace (Metal)
+    need_filter("scale_vt");            // VideoToolbox HW scale (iOS 16)
+    need_filter("transpose_vt");        // VideoToolbox HW rotate (iOS 16)
     need_filter("zscale");              // libzimg
     need_filter("drawtext");            // libfreetype + harfbuzz + fribidi
     need_filter("subtitles");           // libass
+    // Audio leveling + pitch-corrected speed.
+    need_filter("loudnorm");            // EBU R128 loudness normalization
+    need_filter("dynaudnorm");
+    need_filter("atempo");
+    need_filter("aresample");
 
     // Muxers: MP4/MOV + MPEG-TS + HLS bridge to AVPlayer.
     need_muxer("mov");

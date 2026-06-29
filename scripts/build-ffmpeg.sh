@@ -11,14 +11,14 @@
 # Designed to run on a GitHub Actions `macos-15` runner.
 #
 # Tunables (env):
-#   FFMPEG_VERSION   FFmpeg git tag to build      (default n7.1.5)
-#   MIN_IOS_VERSION  Minimum deployment target    (default 15.0)
+#   FFMPEG_VERSION   FFmpeg git tag to build      (default n8.1.2)
+#   MIN_IOS_VERSION  Minimum deployment target    (default 16.0)
 #   USE_CCACHE       Set to 1 to wrap clang in ccache (CI sets this)
 # ===========================================================================
 set -euo pipefail
 
-FFMPEG_VERSION="${FFMPEG_VERSION:-n7.1.5}"
-MIN_IOS_VERSION="${MIN_IOS_VERSION:-15.0}"
+FFMPEG_VERSION="${FFMPEG_VERSION:-n8.1.2}"
+MIN_IOS_VERSION="${MIN_IOS_VERSION:-16.0}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="$ROOT/ffmpeg"            # FFmpeg source checkout
@@ -34,15 +34,20 @@ EXTSRC="$BUILD_DIR/extsrc"       # external-lib source checkouts (per sdk)
 # The 6 libraries we ship. Order matters for link/dependency clarity.
 LIBS=(libavutil libavcodec libavformat libavfilter libswscale libswresample)
 
-# Comprehensive LGPL build (v1.1.0+). Rather than an allow-list, we build the
-# FULL non-GPL component set: ALL built-in filters (incl. the VideoToolbox
-# hardware filters scale_vt/transpose_vt/yadif_vt/tonemap_vt), all built-in
+# Comprehensive LGPL build (FFmpeg 8.1.2, min iOS 16). Rather than an allow-list
+# we build the FULL non-GPL component set: ALL built-in filters, all built-in
 # decoders/demuxers/muxers/parsers/bsfs, plus the external-library filters
 # (zscale via libzimg; drawtext via libfreetype+libharfbuzz+libfribidi;
-# subtitles/ass via libass). GPL stays OFF (no --enable-gpl, no postproc, no
-# x264/x265), so this is LGPL-clean. Static dead-strip means the consuming app
-# only links the components it actually calls — a large catalog here does not
-# bloat the app; it just means the app never needs another FFmpeg rebuild.
+# subtitles/ass via libass) and the libdav1d fast AV1 decoder. The explicit
+# --enable-decoder/--enable-filter lists below only PIN a few must-keep
+# components; they don't narrow the full set. GPL stays OFF (no --enable-gpl, no
+# postproc, no x264/x265), so this is LGPL-clean — note this excludes the GPL
+# cropdetect filter. The VideoToolbox hardware filters scale_vt/transpose_vt
+# need iOS-16 APIs (VTPixelTransfer/RotationSessionCreate) and so come on only
+# now that min iOS is 16; yadif_videotoolbox needs Metal. There is no tonemap_vt
+# in FFmpeg — software tonemap + zscale cover HDR->SDR. Static dead-strip means
+# the consuming app only links the components it actually calls, so a large
+# catalog here doesn't bloat the app; it just never needs another rebuild.
 
 log() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 
@@ -118,7 +123,10 @@ build_one() {
       --enable-securetransport \
       --enable-libfribidi --enable-libfreetype --enable-libharfbuzz \
       --enable-libzimg --enable-libass \
-      --enable-encoder=h264_videotoolbox,hevc_videotoolbox )
+      --enable-libdav1d \
+      --enable-encoder=h264_videotoolbox,hevc_videotoolbox \
+      --enable-decoder=pgssub,dvdsub,dvbsub \
+      --enable-filter=scale,format,aresample,anull,null,overlay,subtitles,loudnorm,dynaudnorm,atempo,fps,setpts,zscale,tonemap )
 
   log "Building $sdk slice"
   make -C "$builddir" -j"$(sysctl -n hw.ncpu)"
@@ -176,12 +184,14 @@ prune_unavailable_headers() {
   fi
 }
 
-# The external libraries (libass/libzimg/libharfbuzz/libfreetype/libfribidi)
-# are separate static archives, but only libavfilter references them (drawtext,
-# subtitles, zscale). Merge them INTO each slice's libavfilter.a so the shipped
-# xcframework is self-contained — the consuming app links no extra archives,
-# only the libc++ runtime. Use Apple's libtool via xcrun (NOT the GNU libtool
-# that `brew install libtool` puts on PATH, which has no -static merge).
+# The external libraries are separate static archives, but each is referenced
+# by exactly one FFmpeg lib, so we merge it INTO that lib's archive to keep the
+# shipped xcframeworks self-contained — the consuming app links no extra
+# archives, only the libc++ runtime. Use Apple's libtool via xcrun (NOT the GNU
+# libtool that `brew install libtool` puts on PATH, which has no -static merge).
+#   libavfilter <- libass/libzimg/libharfbuzz/libfreetype/libfribidi
+#                  (drawtext, subtitles, zscale)
+#   libavcodec  <- libdav1d  (the libdav1d AV1 decoder)
 merge_external_libs() {
   local sdk d e
   for sdk in iphoneos iphonesimulator; do
@@ -193,6 +203,11 @@ merge_external_libs() {
       "$e/libass.a" "$e/libzimg.a" "$e/libharfbuzz.a" \
       "$e/libfreetype.a" "$e/libfribidi.a"
     mv "$d/libavfilter-merged.a" "$d/libavfilter.a"
+
+    log "Merging libdav1d.a into libavcodec.a ($sdk)"
+    xcrun libtool -static -o "$d/libavcodec-merged.a" \
+      "$d/libavcodec.a" "$e/libdav1d.a"
+    mv "$d/libavcodec-merged.a" "$d/libavcodec.a"
   done
 }
 

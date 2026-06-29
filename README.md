@@ -22,7 +22,7 @@ Six static-library XCFrameworks, each with an **arm64 iOS-device** slice and an
 | `libswscale.xcframework`    | `Libswscale`    |
 | `libswresample.xcframework` | `Libswresample` |
 
-**FFmpeg version:** `n7.1.5` · **Min iOS:** 15.0 · **License:** LGPL-2.1+
+**FFmpeg version:** `n8.1.2` · **Min iOS:** 16.0 · **License:** LGPL-2.1+
 
 ### Enabled capabilities (comprehensive LGPL build, v1.1.0+)
 
@@ -32,22 +32,25 @@ filter libraries below. Static dead-strip means the app only links what it
 actually calls, so the broad catalog never needs another rebuild to add a
 filter. GPL is off (no `--enable-gpl`, no x264/x265, no libpostproc).
 
-- **Hardware encode:** `h264_videotoolbox`, `hevc_videotoolbox`, native `aac`;
-  `mov_text` for soft subtitles into MP4.
+- **Hardware encode:** `h264_videotoolbox`, `hevc_videotoolbox`,
+  `prores_videotoolbox` (new in 8.x), native `aac`; `mov_text` for soft
+  subtitles into MP4.
 - **Decode (everything non-GPL):** h264/hevc/vp8/vp9/av1/mpeg*/vc1/theora video;
   aac/ac3/eac3/opus/vorbis/flac/mp3/alac plus **dca (DTS)/truehd/mlp/wma*** that
   AVPlayer can't decode (transcode to AAC); subtitles
-  subrip/ass/webvtt/mov_text/dvdsub/dvbsub/**pgssub**/microdvd.
+  subrip/ass/webvtt/mov_text/dvdsub/dvbsub/**pgssub**/microdvd. AV1 decodes via
+  **libdav1d** (fast reference decoder) in software, and via the
+  `av1_videotoolbox` hardware hwaccel on devices that support it (M3/A17 Pro+).
 - **Filters:** the full built-in LGPL set (scale, zscale, format, colorspace,
   curves, lut3d, tonemap, unsharp, cas, atadenoise, nlmeans, deband, yadif,
-  bwdif, crop, pad, transpose, fps, overlay, hstack/vstack, aresample, volume,
-  loudnorm, …) **+ external:** `zscale` (libzimg, HQ scale/colorspace/HDR),
-  `drawtext` (libfreetype/harfbuzz/fribidi), `subtitles`/`ass` (libass burn-in).
-  Hardware: `yadif_videotoolbox` (Metal).
-  > VideoToolbox `scale_vt`/`transpose_vt` need iOS 16 APIs and are off at
-  > min-iOS 15.0; `tonemap_vt` doesn't exist in FFmpeg 7.1. `zscale` covers
-  > HQ scaling/HDR. Bumping the deployment target to 16 would enable the `_vt`
-  > scale/transpose filters.
+  bwdif, crop, pad, transpose, fps, setpts, overlay, hstack/vstack, aresample,
+  volume, loudnorm, dynaudnorm, atempo, …) **+ external:** `zscale` (libzimg, HQ
+  scale/colorspace/HDR), `drawtext` (libfreetype/harfbuzz/fribidi),
+  `subtitles`/`ass` (libass burn-in). Hardware: `yadif_videotoolbox` (Metal) and
+  — now that min-iOS is 16 — `scale_vt`/`transpose_vt` (VideoToolbox HW
+  scale/rotate on pixel buffers).
+  > `tonemap_vt` does not exist in FFmpeg; software `tonemap` + `zscale` cover
+  > HDR→SDR. The GPL `cropdetect`/`eq`/`hqdn3d` filters are excluded (LGPL build).
 - **Demux/Mux:** all non-GPL (matroska/webm, mov/mp4, avi, flv, mpegts, asf,
   ogg, hls, wav, …); muxers include mov/mp4/mpegts plus **hls** and **segment**.
   Fragmented MP4 at runtime via `movflags=frag_keyframe+empty_moov+default_base_moof`.
@@ -142,7 +145,7 @@ The build scripts in this repo are MIT (see [LICENSE](LICENSE)). The XCFramework
   is linked in.
 - `h264_videotoolbox` / `hevc_videotoolbox` are Apple framework encoders; they
   pull in no GPL.
-- FFmpeg source for the pinned tag: <https://github.com/FFmpeg/FFmpeg/tree/n7.1.5>
+- FFmpeg source for the pinned tag: <https://github.com/FFmpeg/FFmpeg/tree/n8.1.2>
 
 When shipping an app that links these, include FFmpeg's `COPYING.LGPLv2.1`, an
 attribution notice, and an offer of the corresponding source (a link to the tag

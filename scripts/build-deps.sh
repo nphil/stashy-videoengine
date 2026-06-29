@@ -11,6 +11,7 @@
 #   harfbuzz  -> drawtext, libass (text shaping; C++)
 #   zimg      -> zscale (HQ scale / colorspace / HDR; C++)
 #   libass    -> subtitles / ass (subtitle burn-in)
+#   dav1d     -> libdav1d decoder (fast AV1 software decode; meson + arm64 asm)
 #
 # Each library is skipped if already installed (so a cached <prefix> makes
 # this a no-op). FFmpeg later finds them via pkg-config (PKG_CONFIG_LIBDIR).
@@ -21,13 +22,14 @@ set -euo pipefail
 SDK="${1:?usage: build-deps.sh <sdk> <prefix> <srcroot> [min_ios]}"
 PREFIX="${2:?missing prefix}"
 SRCROOT="${3:?missing srcroot}"
-MIN_IOS_VERSION="${4:-15.0}"
+MIN_IOS_VERSION="${4:-16.0}"
 
 FRIBIDI_VERSION=1.0.16
 FREETYPE_VERSION=2.13.3
 HARFBUZZ_VERSION=11.5.1
 ZIMG_VERSION=release-3.0.6
 LIBASS_VERSION=0.17.5
+DAV1D_VERSION=1.5.1
 
 log() { printf '\n\033[1;35m--> [deps/%s] %s\033[0m\n' "$SDK" "$*"; }
 
@@ -167,10 +169,55 @@ build_libass() {
   make install
 }
 
+# --- dav1d (meson, C + arm64 NEON asm; fast AV1 decoder; no external deps) -
+# Reuses the same meson cross-file shape as harfbuzz. arm64 asm assembles with
+# the clang integrated assembler (nasm is only needed for x86), so no extra
+# assembler is required for the iOS slices. Installs libdav1d.a + dav1d.pc;
+# FFmpeg picks it up via pkg-config and --enable-libdav1d. build-ffmpeg.sh then
+# merges libdav1d.a INTO libavcodec.a (the lib that references it) so the
+# shipped xcframework stays self-contained.
+build_dav1d() {
+  [ -f "$PREFIX/lib/pkgconfig/dav1d.pc" ] && { log "dav1d cached"; return; }
+  log "dav1d $DAV1D_VERSION"
+  rm -rf "$SRCROOT/dav1d-$DAV1D_VERSION"
+  git clone --depth 1 --branch "$DAV1D_VERSION" \
+    https://github.com/videolan/dav1d.git "$SRCROOT/dav1d-$DAV1D_VERSION"
+  cd "$SRCROOT/dav1d-$DAV1D_VERSION"
+  rm -rf _build
+
+  meson_arr() { printf "'%s', " $1 | sed 's/, $//'; }
+  cat > ios-cross.txt <<EOF
+[binaries]
+c = '$CC'
+cpp = '$CXX'
+ar = '$AR'
+ranlib = '$RANLIB'
+strip = 'strip'
+pkg-config = 'pkg-config'
+
+[host_machine]
+system = 'darwin'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'
+
+[built-in options]
+c_args = [$(meson_arr "$CFLAGS")]
+c_link_args = [$(meson_arr "$LDFLAGS")]
+EOF
+
+  meson setup _build --cross-file ios-cross.txt --prefix "$PREFIX" --libdir lib \
+    --buildtype release --default-library static \
+    -Denable_tools=false -Denable_tests=false
+  meson compile -C _build
+  meson install -C _build
+}
+
 log "Building external libraries into $PREFIX"
 build_fribidi
 build_freetype
 build_harfbuzz
 build_zimg
 build_libass
+build_dav1d
 log "External libraries ready"

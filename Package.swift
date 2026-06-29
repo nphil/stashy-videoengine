@@ -9,7 +9,7 @@ import PackageDescription
 
 let package = Package(
     name: "StashyVideoEngine",
-    platforms: [.iOS(.v15)],
+    platforms: [.iOS(.v16)],
     products: [
         .library(
             name: "FFmpeg",
