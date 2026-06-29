@@ -24,19 +24,37 @@ Six static-library XCFrameworks, each with an **arm64 iOS-device** slice and an
 
 **FFmpeg version:** `n7.1.5` · **Min iOS:** 15.0 · **License:** LGPL-2.1+
 
-### Enabled capabilities (LGPL-minimal)
+### Enabled capabilities (comprehensive LGPL build, v1.1.0+)
 
-- **Hardware encode:** `h264_videotoolbox`, `hevc_videotoolbox`, plus native `aac`
-- **Decode:** h264, hevc, vp9, vp8, av1, mpeg4, mpeg2video, vc1, theora, aac,
-  ac3, eac3, opus, vorbis, flac, mp3, pcm_s16le/be
-- **Demux:** matroska (mkv/webm), mov/mp4, avi, flv, mpegts, asf, ogg, hls,
-  aac, mp3, flac, wav
-- **Mux:** mov, mp4, mpegts — fragmented MP4 is produced at runtime via
-  `movflags=frag_keyframe+empty_moov+default_base_moof`
-- **Bitstream filters:** h264_mp4toannexb, hevc_mp4toannexb, aac_adtstoasc
-- **Filters:** scale, format, aresample, anull, null
-- **Protocols:** file, pipe — remote input is fed via a custom `AVIOContext`,
-  so FFmpeg's own TLS/HTTP stack is intentionally omitted.
+This is a **full non-GPL FFmpeg build** — every built-in LGPL filter, decoder,
+demuxer, muxer, parser and bitstream filter is compiled in, plus the external
+filter libraries below. Static dead-strip means the app only links what it
+actually calls, so the broad catalog never needs another rebuild to add a
+filter. GPL is off (no `--enable-gpl`, no x264/x265, no libpostproc).
+
+- **Hardware encode:** `h264_videotoolbox`, `hevc_videotoolbox`, native `aac`;
+  `mov_text` for soft subtitles into MP4.
+- **Decode (everything non-GPL):** h264/hevc/vp8/vp9/av1/mpeg*/vc1/theora video;
+  aac/ac3/eac3/opus/vorbis/flac/mp3/alac plus **dca (DTS)/truehd/mlp/wma*** that
+  AVPlayer can't decode (transcode to AAC); subtitles
+  subrip/ass/webvtt/mov_text/dvdsub/dvbsub/**pgssub**/microdvd.
+- **Filters:** the full built-in LGPL set (scale, zscale, format, colorspace,
+  curves, lut3d, tonemap, unsharp, cas, atadenoise, nlmeans, deband, yadif,
+  bwdif, crop, pad, transpose, fps, overlay, hstack/vstack, aresample, volume,
+  loudnorm, …) **+ external:** `zscale` (libzimg, HQ scale/colorspace/HDR),
+  `drawtext` (libfreetype/harfbuzz/fribidi), `subtitles`/`ass` (libass burn-in).
+  Hardware: `yadif_videotoolbox` (Metal).
+  > VideoToolbox `scale_vt`/`transpose_vt` need iOS 16 APIs and are off at
+  > min-iOS 15.0; `tonemap_vt` doesn't exist in FFmpeg 7.1. `zscale` covers
+  > HQ scaling/HDR. Bumping the deployment target to 16 would enable the `_vt`
+  > scale/transpose filters.
+- **Demux/Mux:** all non-GPL (matroska/webm, mov/mp4, avi, flv, mpegts, asf,
+  ogg, hls, wav, …); muxers include mov/mp4/mpegts plus **hls** and **segment**.
+  Fragmented MP4 at runtime via `movflags=frag_keyframe+empty_moov+default_base_moof`.
+- **Bitstream filters:** all non-GPL (h264/hevc_mp4toannexb, aac_adtstoasc,
+  extract_extradata, vp9_superframe, av1_metadata, …).
+- **Protocols:** file, pipe, **http, https, tls** (SecureTransport). The app may
+  still feed remote input via a custom `AVIOContext`; networking is a fallback.
 
 ## Consuming from the Stashy app
 
@@ -64,9 +82,14 @@ import Libavutil
 The `FFmpegSupport` target attaches the linker settings FFmpeg needs, so you
 don't have to add them yourself:
 
-- System library: `z` (zlib — bz2/iconv/lzma are disabled at build time since
-  liblzma isn't in the iOS SDK and the others aren't needed)
-- Frameworks: `VideoToolbox`, `CoreMedia`, `CoreVideo`, `CoreFoundation`
+- System libraries: `z`, `bz2`, `iconv`, `c++` (libc++, for the C++ external
+  libs libzimg/harfbuzz; lzma is disabled — it isn't in the iOS SDK)
+- Frameworks: `VideoToolbox`, `CoreMedia`, `CoreVideo`, `CoreFoundation`,
+  `Security` (SecureTransport), `AudioToolbox`, `Metal` (VideoToolbox filters)
+
+The external filter libraries (libzimg/libfreetype/libharfbuzz/libfribidi/
+libass) are merged into `libavfilter.xcframework`, so there are still exactly
+six xcframeworks and nothing extra to link.
 
 The clang module map that makes `import Libavcodec` (etc.) work ships inside the
 `libavutil.xcframework` and declares all six modules — this avoids the
