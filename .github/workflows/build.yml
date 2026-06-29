@@ -54,11 +54,14 @@ jobs:
           path: ffmpeg
           key: ffmpeg-src-${{ env.FFMPEG_VERSION }}
 
-      - name: Cache external libraries (fribidi/freetype/harfbuzz/zimg/libass)
+      - name: Cache external libraries (fribidi/freetype/harfbuzz/zimg/libass/dav1d)
         uses: actions/cache@v4
         with:
           path: build/deps
           key: deps-${{ env.MIN_IOS_VERSION }}-${{ hashFiles('scripts/build-deps.sh') }}
+          # Save even when a later step (FFmpeg configure/build) fails, so
+          # iterating on FFmpeg flags doesn't re-pay the ~10m dep cross-compile.
+          save-always: true
 
       - name: Build XCFrameworks
         run: bash scripts/build-ffmpeg.sh
