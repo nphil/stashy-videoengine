@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# ===========================================================================
+# verify.sh
+#
+# Post-build gates that run natively on the runner. Every step is a hard fail.
+#   1. Each .xcframework exposes ios-arm64 + ios-arm64-simulator (arm64).
+#   2. The VideoToolbox encoders are actually compiled into libavcodec.
+#   3. Module maps validate under the REAL consume layout: all six
+#      xcframeworks' Headers are flattened into one include dir (exactly what
+#      SwiftPM does for binary targets), then both ObjC `@import` and Swift
+#      `import` of all six modules must compile. This reproduces the
+#      module.modulemap collision / cross-include failures that a naive
+#      per-library -I check would hide.
+#   4. A tiny C program links every lib + the system frameworks and runs on an
+#      iOS simulator, confirming av_version_info() and that the VideoToolbox
+#      encoders are registered at runtime.
+# ===========================================================================
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUILD_DIR="$ROOT/build"
+OUT="$BUILD_DIR/xcframeworks"
+THIN="$BUILD_DIR/thin"
+TESTDIR="$ROOT/test"
+WORK="$BUILD_DIR/verify"
+MIN_IOS_VERSION="${MIN_IOS_VERSION:-15.0}"
+SIM_TRIPLE="arm64-apple-ios${MIN_IOS_VERSION}-simulator"
+
+LIBS=(libavutil libavcodec libavformat libavfilter libswscale libswresample)
+
+log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
+pass() { printf '\033[1;32m  [PASS]\033[0m %s\n' "$*"; }
+fail() { printf '\033[1;31m  [FAIL]\033[0m %s\n' "$*"; exit 1; }
+
+rm -rf "$WORK"; mkdir -p "$WORK"
+
+# --- 1: structure + architecture ------------------------------------------
+log "Inspecting xcframeworks"
+for lib in "${LIBS[@]}"; do
+  fw="$OUT/$lib.xcframework"
+  [ -d "$fw" ] || fail "$lib.xcframework missing"
+  ids="$(plutil -p "$fw/Info.plist" | grep -o '"LibraryIdentifier" => "[^"]*"' | sed 's/.*=> "//;s/"//')"
+  echo "$ids" | grep -q '^ios-arm64$'           || fail "$lib missing ios-arm64 slice"
+  echo "$ids" | grep -q '^ios-arm64-simulator$' || fail "$lib missing ios-arm64-simulator slice"
+  lipo -info "$fw/ios-arm64/$lib.a"           | grep -q 'arm64' || fail "$lib device not arm64"
+  lipo -info "$fw/ios-arm64-simulator/$lib.a" | grep -q 'arm64' || fail "$lib simulator not arm64"
+  pass "$lib.xcframework: ios-arm64 + ios-arm64-simulator (arm64)"
+done
+
+# --- 2: VideoToolbox encoders present in the binary -----------------------
+log "Checking compiled-in encoders (nm)"
+codec="$THIN/iphoneos/lib/libavcodec.a"
+for sym in ff_h264_videotoolbox_encoder ff_hevc_videotoolbox_encoder ff_aac_encoder; do
+  nm "$codec" 2>/dev/null | grep -q "$sym" || fail "encoder symbol $sym not found in libavcodec.a"
+  pass "$sym present"
+done
+
+# --- 3: module maps under the flattened consume layout --------------------
+log "Flattening all six xcframeworks' Headers into one include dir (as SwiftPM does)"
+FLAT="$WORK/flat-include"
+mkdir -p "$FLAT"
+for lib in "${LIBS[@]}"; do
+  cp -R "$OUT/$lib.xcframework/ios-arm64-simulator/Headers/." "$FLAT/"
+done
+[ -f "$FLAT/module.modulemap" ] || fail "no module.modulemap in flattened include dir"
+echo "  flattened contents: $(ls "$FLAT" | tr '\n' ' ')"
+
+log "ObjC @import of all six modules (clang -fmodules)"
+xcrun --sdk iphonesimulator clang -target "$SIM_TRIPLE" \
+  -fmodules -fsyntax-only \
+  -I "$FLAT" -fmodules-cache-path="$WORK/modcache" \
+  "$TESTDIR/module_check.m" \
+  && pass "all 6 modules @import cleanly" \
+  || fail "module map / @import validation failed"
+
+log "Swift import of all six modules (swiftc -typecheck)"
+SIM_SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+xcrun --sdk iphonesimulator swiftc -target "$SIM_TRIPLE" -sdk "$SIM_SDK" \
+  -typecheck \
+  -Xcc -I -Xcc "$FLAT" \
+  "$TESTDIR/SwiftImportCheck.swift" \
+  && pass "all 6 modules import from Swift" \
+  || fail "Swift import validation failed"
+
+# --- 4: link + run on a simulator -----------------------------------------
+log "Compiling + linking simulator smoke test"
+xcrun --sdk iphonesimulator clang -target "$SIM_TRIPLE" \
+  "$TESTDIR/smoke.c" \
+  -I "$THIN/iphonesimulator/include" \
+  -L "$THIN/iphonesimulator/lib" \
+  -lavformat -lavfilter -lavcodec -lswscale -lswresample -lavutil \
+  -lz \
+  -framework VideoToolbox -framework CoreMedia -framework CoreVideo \
+  -framework CoreFoundation \
+  -o "$WORK/smoke" \
+  && pass "smoke test linked" \
+  || fail "smoke test failed to link"
+
+log "Booting a simulator and running the smoke test"
+DEVTYPE="$(xcrun simctl list devicetypes -j | \
+  python3 -c 'import sys,json;print([d["identifier"] for d in json.load(sys.stdin)["devicetypes"] if "iPhone" in d["name"]][-1])')"
+RUNTIME="$(xcrun simctl list runtimes -j | \
+  python3 -c 'import sys,json;rs=[r["identifier"] for r in json.load(sys.stdin)["runtimes"] if r["platform"]=="iOS" and r["isAvailable"]];print(rs[-1])')"
+echo "  device type: $DEVTYPE"
+echo "  runtime:     $RUNTIME"
+
+UDID="$(xcrun simctl create stashy-smoke "$DEVTYPE" "$RUNTIME")"
+trap 'xcrun simctl delete "$UDID" >/dev/null 2>&1 || true' EXIT
+xcrun simctl boot "$UDID"
+xcrun simctl spawn "$UDID" "$WORK/smoke" && pass "smoke test ran on simulator" \
+  || fail "smoke test returned non-zero on simulator"
+
+log "All verification checks passed"

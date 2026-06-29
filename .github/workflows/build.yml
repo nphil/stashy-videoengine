@@ -1,0 +1,67 @@
+name: Build FFmpeg XCFrameworks
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      FFMPEG_VERSION: n7.1.5
+      MIN_IOS_VERSION: "15.0"
+      USE_CCACHE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          echo "iphoneos SDK:       $(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "iphonesimulator SDK: $(xcrun --sdk iphonesimulator --show-sdk-version)"
+          bash --version | head -1
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}
+
+      - name: Cache FFmpeg source
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg
+          key: ffmpeg-src-${{ env.FFMPEG_VERSION }}
+
+      - name: Build XCFrameworks
+        run: bash scripts/build-ffmpeg.sh
+
+      - name: Verify
+        run: bash scripts/verify.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcframeworks
+          path: |
+            build/dist/*.xcframework.zip
+            build/dist/checksums.txt
+          if-no-files-found: error
+
+      - name: Create Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/release.sh "${GITHUB_REF_NAME}"

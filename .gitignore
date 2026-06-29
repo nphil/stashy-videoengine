@@ -1,0 +1,9 @@
+# FFmpeg source checkout (cloned by scripts/build-ffmpeg.sh)
+/ffmpeg/
+
+# Build outputs
+/build/
+
+# macOS / Xcode noise
+.DS_Store
+*.xcuserstate
