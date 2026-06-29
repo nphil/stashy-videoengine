@@ -151,6 +151,25 @@ EOF
   done
 }
 
+# FFmpeg installs the hwaccel public headers for EVERY backend (cuda, d3d11va,
+# vaapi, vdpau, qsv, vulkan, opencl, ...) regardless of what was enabled, and
+# each one #includes an external SDK header (cuda.h, d3d11.h, va/va.h, ...)
+# that does not exist on iOS. Our umbrella module would try to compile them and
+# fail. Drop the ones irrelevant to iOS; keep the core hwcontext.h and the
+# VideoToolbox variants (those only pull in system frameworks).
+prune_unavailable_headers() {
+  local d="$1"
+  if [ -d "$d/libavutil" ]; then
+    find "$d/libavutil" -name 'hwcontext_*.h' ! -name 'hwcontext_videotoolbox.h' -delete
+  fi
+  if [ -d "$d/libavcodec" ]; then
+    local h
+    for h in dxva2.h d3d11va.h d3d12va.h qsv.h vdpau.h vaapi.h mediacodec.h; do
+      rm -f "$d/libavcodec/$h"
+    done
+  fi
+}
+
 package_xcframeworks() {
   rm -rf "$HEADERS" "$OUT"
   mkdir -p "$HEADERS" "$OUT"
@@ -161,6 +180,7 @@ package_xcframeworks() {
     mkdir -p "$hdrdir"
     # Each xcframework ships only its own lib's headers subdir.
     cp -R "$THIN/iphoneos/include/$lib" "$hdrdir/$lib"
+    prune_unavailable_headers "$hdrdir"
     # Exactly one xcframework (libavutil) also carries the combined module map.
     if [ "$lib" = "libavutil" ]; then
       write_combined_modulemap "$hdrdir/module.modulemap"
