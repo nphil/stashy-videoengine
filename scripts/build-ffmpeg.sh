@@ -28,6 +28,8 @@ THIN="$BUILD_DIR/thin"           # per-SDK install prefixes
 HEADERS="$BUILD_DIR/headers"     # per-lib headers + module.modulemap
 OUT="$BUILD_DIR/xcframeworks"    # final .xcframework outputs
 DIST="$BUILD_DIR/dist"           # zipped artifacts + checksums.txt
+DEPS="$BUILD_DIR/deps"           # external-lib install prefixes (per sdk; cacheable)
+EXTSRC="$BUILD_DIR/extsrc"       # external-lib source checkouts (per sdk)
 
 # The 6 libraries we ship. Order matters for link/dependency clarity.
 LIBS=(libavutil libavcodec libavformat libavfilter libswscale libswresample)
@@ -81,22 +83,32 @@ build_one() {
   fi
 
   local flags="-arch arm64 ${minflag}=${MIN_IOS_VERSION}"
+  local depprefix="$DEPS/$sdk"
+
+  # Cross-compile the external libraries (drawtext/subtitles/zscale) into a
+  # per-sdk prefix; FFmpeg finds them via pkg-config below. Skipped per-lib if
+  # already installed (a cached $DEPS makes this a near no-op).
+  bash "$ROOT/scripts/build-deps.sh" "$sdk" "$depprefix" "$EXTSRC/$sdk" "$MIN_IOS_VERSION"
 
   rm -rf "$builddir"
   mkdir -p "$builddir" "$prefix"
-  ( cd "$builddir" && "$SRC_DIR/configure" \
+  ( cd "$builddir" && PKG_CONFIG_LIBDIR="$depprefix/lib/pkgconfig" "$SRC_DIR/configure" \
       --prefix="$prefix" \
       --enable-cross-compile \
       --target-os=darwin \
       --arch=arm64 \
       --sysroot="$sysroot" \
       --cc="${ccache_prefix}${cc}" \
+      --cxx="$(xcrun --sdk "$sdk" -f clang++)" \
       --ar="$ar" \
       --ranlib="$ranlib" \
       --strip="$strip" \
       --nm="$nm" \
-      --extra-cflags="$flags" \
-      --extra-ldflags="$flags" \
+      --pkg-config="pkg-config" \
+      --pkg-config-flags="--static" \
+      --extra-cflags="$flags -I$depprefix/include" \
+      --extra-ldflags="$flags -L$depprefix/lib" \
+      --extra-libs="-lc++" \
       --enable-static --disable-shared --enable-pic --enable-small \
       --disable-programs --disable-doc --disable-debug \
       --disable-gpl --disable-nonfree \
@@ -104,6 +116,8 @@ build_one() {
       --disable-lzma \
       --enable-videotoolbox \
       --enable-securetransport \
+      --enable-libfribidi --enable-libfreetype --enable-libharfbuzz \
+      --enable-libzimg --enable-libass \
       --enable-encoder=h264_videotoolbox,hevc_videotoolbox )
 
   log "Building $sdk slice"
@@ -162,6 +176,26 @@ prune_unavailable_headers() {
   fi
 }
 
+# The external libraries (libass/libzimg/libharfbuzz/libfreetype/libfribidi)
+# are separate static archives, but only libavfilter references them (drawtext,
+# subtitles, zscale). Merge them INTO each slice's libavfilter.a so the shipped
+# xcframework is self-contained — the consuming app links no extra archives,
+# only the libc++ runtime. Use Apple's libtool via xcrun (NOT the GNU libtool
+# that `brew install libtool` puts on PATH, which has no -static merge).
+merge_external_libs() {
+  local sdk d e
+  for sdk in iphoneos iphonesimulator; do
+    d="$THIN/$sdk/lib"
+    e="$DEPS/$sdk/lib"
+    log "Merging external libs into libavfilter.a ($sdk)"
+    xcrun libtool -static -o "$d/libavfilter-merged.a" \
+      "$d/libavfilter.a" \
+      "$e/libass.a" "$e/libzimg.a" "$e/libharfbuzz.a" \
+      "$e/libfreetype.a" "$e/libfribidi.a"
+    mv "$d/libavfilter-merged.a" "$d/libavfilter.a"
+  done
+}
+
 package_xcframeworks() {
   rm -rf "$HEADERS" "$OUT"
   mkdir -p "$HEADERS" "$OUT"
@@ -208,6 +242,7 @@ main() {
   fetch_source
   build_one iphoneos        -mios-version-min
   build_one iphonesimulator -mios-simulator-version-min
+  merge_external_libs
   package_xcframeworks
   package_dist
   log "Done. 6 xcframeworks + checksums.txt in build/dist/"

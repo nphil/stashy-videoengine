@@ -38,6 +38,11 @@ jobs:
           echo "iphonesimulator SDK: $(xcrun --sdk iphonesimulator --show-sdk-version)"
           bash --version | head -1
 
+      - name: Install build tools (autotools / meson for external libs)
+        run: |
+          brew install --quiet autoconf automake libtool pkg-config meson ninja xz \
+            || brew install autoconf automake libtool pkg-config meson ninja xz
+
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -48,6 +53,12 @@ jobs:
         with:
           path: ffmpeg
           key: ffmpeg-src-${{ env.FFMPEG_VERSION }}
+
+      - name: Cache external libraries (fribidi/freetype/harfbuzz/zimg/libass)
+        uses: actions/cache@v4
+        with:
+          path: build/deps
+          key: deps-${{ env.MIN_IOS_VERSION }}-${{ hashFiles('scripts/build-deps.sh') }}
 
       - name: Build XCFrameworks
         run: bash scripts/build-ffmpeg.sh

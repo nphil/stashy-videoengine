@@ -71,12 +71,14 @@ $(emit_binary_targets)
                 .linkedLibrary("z"),
                 .linkedLibrary("bz2"),
                 .linkedLibrary("iconv"),
+                .linkedLibrary("c++"),
                 .linkedFramework("VideoToolbox"),
                 .linkedFramework("CoreMedia"),
                 .linkedFramework("CoreVideo"),
                 .linkedFramework("CoreFoundation"),
                 .linkedFramework("Security"),
                 .linkedFramework("AudioToolbox"),
+                .linkedFramework("Metal"),
             ]
         ),
     ]

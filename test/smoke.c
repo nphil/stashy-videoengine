@@ -55,6 +55,11 @@ int main(void) {
     need_filter("yadif");
     need_filter("overlay");
 
+    // External-library filters (libzimg / libfreetype+harfbuzz+fribidi / libass).
+    need_filter("zscale");
+    need_filter("drawtext");
+    need_filter("subtitles");
+
     // Muxers (HLS bridge to AVPlayer).
     need_muxer("hls");
 
