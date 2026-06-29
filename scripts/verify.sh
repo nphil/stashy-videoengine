@@ -105,17 +105,25 @@ xcrun --sdk iphonesimulator clang -target "$SIM_TRIPLE" \
   && pass "smoke test linked" \
   || fail "smoke test failed to link"
 
-log "Booting a simulator and running the smoke test"
-DEVTYPE="$(xcrun simctl list devicetypes -j | \
-  python3 -c 'import sys,json;print([d["identifier"] for d in json.load(sys.stdin)["devicetypes"] if "iPhone" in d["name"]][-1])')"
-RUNTIME="$(xcrun simctl list runtimes -j | \
-  python3 -c 'import sys,json;rs=[r["identifier"] for r in json.load(sys.stdin)["runtimes"] if r["platform"]=="iOS" and r["isAvailable"]];print(rs[-1])')"
-echo "  device type: $DEVTYPE"
-echo "  runtime:     $RUNTIME"
-
-UDID="$(xcrun simctl create stashy-smoke "$DEVTYPE" "$RUNTIME")"
-trap 'xcrun simctl delete "$UDID" >/dev/null 2>&1 || true' EXIT
-xcrun simctl boot "$UDID"
+log "Selecting an available simulator and running the smoke test"
+# Use a simulator the runner already pre-created (guaranteed device/runtime
+# compatibility) rather than pairing an arbitrary device type with the latest
+# runtime, which can yield SimError 403 "Incompatible device".
+UDID="$(xcrun simctl list devices available -j | python3 -c '
+import sys, json
+data = json.load(sys.stdin)["devices"]
+for runtime, devs in data.items():
+    if "iOS" not in runtime:
+        continue
+    for dev in devs:
+        if dev.get("isAvailable") and "iPhone" in dev.get("name", ""):
+            print(dev["udid"]); sys.exit(0)
+')"
+[ -n "$UDID" ] || fail "no available iOS simulator found on the runner"
+echo "  using simulator udid: $UDID"
+xcrun simctl boot "$UDID" 2>/dev/null || true
+xcrun simctl bootstatus "$UDID" >/dev/null 2>&1 || true
+trap 'xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true' EXIT
 xcrun simctl spawn "$UDID" "$WORK/smoke" && pass "smoke test ran on simulator" \
   || fail "smoke test returned non-zero on simulator"
 
