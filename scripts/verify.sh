@@ -48,11 +48,20 @@ for lib in "${LIBS[@]}"; do
 done
 
 # --- 2: VideoToolbox encoders present in the binary -----------------------
+# NB: capture nm's (large) output into a variable and match with `case` rather
+# than `nm | grep -q`. Under `set -o pipefail`, grep -q closes the pipe on its
+# first match, nm dies with SIGPIPE (141), and pipefail would report the whole
+# pipeline as failed even though the symbol WAS found.
 log "Checking compiled-in encoders (nm)"
 codec="$THIN/iphoneos/lib/libavcodec.a"
+codec_syms="$(xcrun nm "$codec" 2>/dev/null || true)"
 for sym in ff_h264_videotoolbox_encoder ff_hevc_videotoolbox_encoder ff_aac_encoder; do
-  nm "$codec" 2>/dev/null | grep -q "$sym" || fail "encoder symbol $sym not found in libavcodec.a"
-  pass "$sym present"
+  case "$codec_syms" in
+    *"$sym"*) pass "$sym present" ;;
+    *) echo "  encoder-ish symbols present in libavcodec.a:"
+       printf '%s\n' "$codec_syms" | grep -iE 'videotoolbox|aac_encoder' | head -20 || true
+       fail "encoder symbol $sym not found in libavcodec.a" ;;
+  esac
 done
 
 # --- 3: module maps under the flattened consume layout --------------------
