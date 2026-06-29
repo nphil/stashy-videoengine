@@ -91,17 +91,22 @@ scripts/release.sh        # create the Release + push the pinned manifest
 .github/workflows/build.yml
 ```
 
-- **Push to `main`** (or run the workflow manually) → builds + verifies +
-  uploads the zipped xcframeworks and `checksums.txt` as workflow artifacts.
-- **Push a `v*` tag** → all of the above, then creates a GitHub Release with
-  the six zips + `checksums.txt`, regenerates `Package.swift` pinned to those
-  assets (SHA-256 checksums), and pushes it back to `main`.
+- **Push to `main`** → builds + verifies + uploads the zipped xcframeworks and
+  `checksums.txt` as workflow artifacts.
+- **Run the workflow manually with a `release_tag`** → all of the above, then
+  regenerates `Package.swift` pinned to this build's SHA-256 checksums, commits
+  it to `main`, tags that commit, and creates a GitHub Release with the six
+  zips + `checksums.txt`.
+
+The release is dispatch-driven (not tag-push-driven) on purpose: the tag is
+created *after* the build, on the commit that already holds the matching
+`Package.swift`, so a `v1.0.0` checkout resolves checksums that match the
+release assets.
 
 ### Cut a release
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+gh workflow run "Build FFmpeg XCFrameworks" -f release_tag=v1.0.0
 ```
 
 ## License & attribution
