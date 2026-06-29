@@ -1,9 +1,12 @@
 // Functional smoke test: links every FFmpeg lib + the system frameworks, then
-// confirms the encoders, decoders, filters and muxers we promise are actually
-// registered at runtime. Built for the arm64 iOS simulator, run via
+// confirms a representative slice of the comprehensive LGPL component set is
+// actually registered at runtime. Built for the arm64 iOS simulator, run via
 // `xcrun simctl spawn`. Returns non-zero if any required component is missing.
+//
+// Only LGPL components present at min-iOS 15.0 are asserted. Notable omissions
+// are intentional: hqdn3d/eq are GPL; scale_vt/transpose_vt need iOS 16 APIs
+// (VTPixelTransfer/RotationSession); tonemap_vt does not exist in FFmpeg 7.1.
 #include <stdio.h>
-#include <string.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavfilter/avfilter.h>
@@ -35,33 +38,55 @@ static void need_muxer(const char *n) {
 int main(void) {
     printf("avutil version : %s\n", av_version_info());
 
-    // Hardware + audio encoders (contract from v1.0.0).
+    // Encoders: hardware video + audio + soft-subtitle mux.
     need_encoder("h264_videotoolbox");
     need_encoder("hevc_videotoolbox");
     need_encoder("aac");
-    need_encoder("mov_text");          // soft-subtitle mux into MP4
+    need_encoder("mov_text");
 
-    // AVPlayer-incompatible audio we must transcode to AAC.
-    need_decoder("dca");               // DTS
+    // Decoders: AVPlayer-incompatible audio + subtitle formats.
+    need_decoder("dca");        // DTS
     need_decoder("truehd");
-    need_decoder("hdmv_pgs_subtitle"); // PGS subs
+    need_decoder("mlp");
+    need_decoder("alac");
+    need_decoder("pgssub");     // HDMV PGS subtitles
+    need_decoder("subrip");
+    need_decoder("webvtt");
+    need_decoder("dvbsub");
+    need_decoder("ass");
 
-    // Built-in + VideoToolbox hardware filters.
+    // Filters: built-in (LGPL) + VideoToolbox hardware + external-library.
     need_filter("scale");
-    need_filter("scale_vt");
-    need_filter("tonemap_vt");
+    need_filter("format");
+    need_filter("colorspace");
+    need_filter("curves");
+    need_filter("lut3d");
     need_filter("unsharp");
-    need_filter("hqdn3d");
+    need_filter("cas");
+    need_filter("atadenoise");
+    need_filter("nlmeans");
+    need_filter("deband");
+    need_filter("tonemap");
     need_filter("yadif");
+    need_filter("bwdif");
+    need_filter("transpose");
+    need_filter("crop");
+    need_filter("pad");
+    need_filter("fps");
     need_filter("overlay");
+    need_filter("hstack");
+    need_filter("vstack");
+    need_filter("yadif_videotoolbox");  // VideoToolbox hardware deinterlace (Metal)
+    need_filter("zscale");              // libzimg
+    need_filter("drawtext");            // libfreetype + harfbuzz + fribidi
+    need_filter("subtitles");           // libass
 
-    // External-library filters (libzimg / libfreetype+harfbuzz+fribidi / libass).
-    need_filter("zscale");
-    need_filter("drawtext");
-    need_filter("subtitles");
-
-    // Muxers (HLS bridge to AVPlayer).
+    // Muxers: MP4/MOV + MPEG-TS + HLS bridge to AVPlayer.
+    need_muxer("mov");
+    need_muxer("mp4");
+    need_muxer("mpegts");
     need_muxer("hls");
+    need_muxer("segment");
 
     if (fails) {
         printf("RESULT: FAIL (%d required component(s) missing)\n", fails);
