@@ -33,7 +33,9 @@ struct LoopbackServerTests {
 
     @Test func waitingRequestWakesWhenContentChanges() async throws {
         let file = try GrowingFile(Self.bytes, available: 500)
-        let server = LoopbackServer(routes: [file.route("/media.mp4")], waitTimeout: 5)
+        // Only a missed wake should time out, not a CI simulator that freezes
+        // the process for seconds before the update below runs.
+        let server = LoopbackServer(routes: [file.route("/media.mp4")], waitTimeout: 60)
         let base = try await server.start()
         defer { server.stop() }
 

@@ -35,6 +35,18 @@ else
     || die "Package.swift is stale; regenerate: bash scripts/gen-package-swift.sh > Package.swift"
 fi
 
+# Tests launched right after xcodebuild booted the simulator stalled for 5-40 s
+# in 13 of 23 runs on the xcode-27 runner (2026-11), enough to trip the tests'
+# I/O timeouts; launched two minutes or more after the boot, 4 runs of 4 were
+# clean (slowest suite 1 s). Booting first lets the boot overlap package
+# resolution and the build; the settle wait covers a build that ends sooner.
+SETTLE_SECONDS=120
+UDID="$(bash scripts/sim-udid.sh)"
+log "Booting the simulator"
+xcrun simctl boot "$UDID" 2>/dev/null || true   # already booted is fine
+( xcrun simctl bootstatus "$UDID" -b >/dev/null && date +%s > "$WORK/booted-at" ) &
+BOOTING=$!
+
 # The scheme that builds every target and runs every test is named after the
 # package (Xcode 27.1 lists only that one), or <package>-Package.
 SCHEME="$(xcodebuild -list -json | python3 -c '
@@ -73,12 +85,23 @@ else
   ACTION="build"
 fi
 
-UDID="$(bash scripts/sim-udid.sh)"
-log "xcodebuild $ACTION -scheme $SCHEME"
-if command -v xcbeautify >/dev/null 2>&1; then
-  xcodebuild $ACTION -scheme "$SCHEME" -destination "id=$UDID" \
-    -derivedDataPath "$WORK/DD" | xcbeautify
-else
-  xcodebuild $ACTION -scheme "$SCHEME" -destination "id=$UDID" \
-    -derivedDataPath "$WORK/DD"
+xcb() {
+  if command -v xcbeautify >/dev/null 2>&1; then
+    xcodebuild "$@" | xcbeautify
+  else
+    xcodebuild "$@"
+  fi
+}
+
+log "xcodebuild build-for-testing -scheme $SCHEME"
+xcb build-for-testing -scheme "$SCHEME" -destination "id=$UDID" -derivedDataPath "$WORK/DD"
+
+wait "$BOOTING" || die "simulator $UDID did not boot"
+settle=$(( $(cat "$WORK/booted-at") + SETTLE_SECONDS - $(date +%s) ))
+if [ "$settle" -gt 0 ]; then
+  log "Letting the simulator settle for $settle s"
+  sleep "$settle"
 fi
+
+log "xcodebuild $ACTION -scheme $SCHEME"
+xcb $ACTION -scheme "$SCHEME" -destination "id=$UDID" -derivedDataPath "$WORK/DD"

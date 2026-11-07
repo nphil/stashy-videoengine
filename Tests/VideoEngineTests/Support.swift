@@ -37,8 +37,10 @@ final class FakeHTTP: URLProtocol, @unchecked Sendable {
         responders.withLock { $0[host] = responder }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [FakeHTTP.self]
+        // Every stub answers at once; the long timeout only rides out a CI
+        // simulator that freezes the test process for seconds at a time.
         return HTTPRangeSource(
-            url: URL(string: "http://\(host)/video.mkv")!, readAheadBytes: readAheadBytes, requestTimeout: 2,
+            url: URL(string: "http://\(host)/video.mkv")!, readAheadBytes: readAheadBytes, requestTimeout: 60,
             maxAttempts: maxAttempts, configuration: configuration
         )
     }
