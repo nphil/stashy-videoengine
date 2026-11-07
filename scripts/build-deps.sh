@@ -15,6 +15,12 @@
 #
 # Each library is skipped if already installed (so a cached <prefix> makes
 # this a no-op). FFmpeg later finds them via pkg-config (PKG_CONFIG_LIBDIR).
+#
+# The source archive each library is built from stays in DEPS_SOURCES
+# (default <srcroot>/sources) with a <name>.source line: name, version,
+# archive, origin URL, git commit. package-sources.sh attaches them to a
+# release; build-ffmpeg.sh keeps them inside the cached build/deps, so the
+# archives always match the cached libraries.
 # Recipes adapted from arthenica/ffmpeg-kit's iOS scripts.
 # ===========================================================================
 set -euo pipefail
@@ -24,12 +30,12 @@ PREFIX="${2:?missing prefix}"
 SRCROOT="${3:?missing srcroot}"
 MIN_IOS_VERSION="${4:-16.0}"
 
-FRIBIDI_VERSION=1.0.16
+FRIBIDI_VERSION=1.0.18
 FREETYPE_VERSION=2.13.3
 HARFBUZZ_VERSION=11.5.1
 ZIMG_VERSION=release-3.0.6
 LIBASS_VERSION=0.17.5
-DAV1D_VERSION=1.5.1
+DAV1D_VERSION=1.5.4
 
 log() { printf '\n\033[1;35m--> [deps/%s] %s\033[0m\n' "$SDK" "$*"; }
 
@@ -51,19 +57,34 @@ export CXXFLAGS="$CFLAGS"
 export LDFLAGS="$CFLAGS"
 export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
 
-mkdir -p "$SRCROOT" "$PREFIX/lib/pkgconfig"
+ARCHIVES="${DEPS_SOURCES:-$SRCROOT/sources}"
+mkdir -p "$SRCROOT" "$PREFIX/lib/pkgconfig" "$ARCHIVES"
 
-fetch() {  # fetch <url> <outfile>
-  [ -f "$SRCROOT/$2" ] || curl -fsSL --retry 3 --retry-delay 2 -o "$SRCROOT/$2" "$1"
+fetch() {  # fetch <name> <version> <url>: keep the tarball, unpack <name>-<version> into $SRCROOT
+  local file
+  file="$(basename "$3")"
+  if [ ! -f "$ARCHIVES/$file" ]; then
+    curl -fsSL --retry 3 --retry-delay 2 -o "$ARCHIVES/$file.part" "$3"
+    mv "$ARCHIVES/$file.part" "$ARCHIVES/$file"
+  fi
+  printf '%s\t%s\t%s\t%s\t\n' "$1" "$2" "$file" "$3" > "$ARCHIVES/$1.source"
+  rm -rf "$SRCROOT/$1-$2"
+  tar xf "$ARCHIVES/$file" -C "$SRCROOT"
+}
+
+archive_git() {  # archive_git <name> <version> <checkout> <url>: keep a tarball of the clone
+  local file="$1-$2.tar.gz"
+  [ -f "$ARCHIVES/$file" ] \
+    || git -C "$3" archive --format=tar.gz --prefix="$1-$2/" -o "$ARCHIVES/$file" HEAD
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$file" "$4" "$(git -C "$3" rev-parse HEAD)" \
+    > "$ARCHIVES/$1.source"
 }
 
 # --- fribidi (autotools, pure C) ------------------------------------------
 build_fribidi() {
   [ -f "$PREFIX/lib/pkgconfig/fribidi.pc" ] && { log "fribidi cached"; return; }
   log "fribidi $FRIBIDI_VERSION"
-  fetch "https://github.com/fribidi/fribidi/releases/download/v$FRIBIDI_VERSION/fribidi-$FRIBIDI_VERSION.tar.xz" "fribidi.tar.xz"
-  rm -rf "$SRCROOT/fribidi-$FRIBIDI_VERSION"
-  tar xf "$SRCROOT/fribidi.tar.xz" -C "$SRCROOT"
+  fetch fribidi "$FRIBIDI_VERSION" "https://github.com/fribidi/fribidi/releases/download/v$FRIBIDI_VERSION/fribidi-$FRIBIDI_VERSION.tar.xz"
   cd "$SRCROOT/fribidi-$FRIBIDI_VERSION"
   ./configure --prefix="$PREFIX" --host="$HOST" --enable-static --disable-shared \
     --with-pic --disable-fast-install --disable-debug --disable-deprecated \
@@ -78,9 +99,7 @@ build_fribidi() {
 build_freetype() {
   [ -f "$PREFIX/lib/pkgconfig/freetype2.pc" ] && { log "freetype cached"; return; }
   log "freetype $FREETYPE_VERSION"
-  fetch "https://download.savannah.gnu.org/releases/freetype/freetype-$FREETYPE_VERSION.tar.xz" "freetype.tar.xz"
-  rm -rf "$SRCROOT/freetype-$FREETYPE_VERSION"
-  tar xf "$SRCROOT/freetype.tar.xz" -C "$SRCROOT"
+  fetch freetype "$FREETYPE_VERSION" "https://download.savannah.gnu.org/releases/freetype/freetype-$FREETYPE_VERSION.tar.xz"
   cd "$SRCROOT/freetype-$FREETYPE_VERSION"
   ./configure --prefix="$PREFIX" --host="$HOST" --with-pic --enable-static --disable-shared \
     --disable-fast-install --without-harfbuzz --without-png --without-brotli \
@@ -95,9 +114,7 @@ build_freetype() {
 build_harfbuzz() {
   [ -f "$PREFIX/lib/pkgconfig/harfbuzz.pc" ] && { log "harfbuzz cached"; return; }
   log "harfbuzz $HARFBUZZ_VERSION"
-  fetch "https://github.com/harfbuzz/harfbuzz/releases/download/$HARFBUZZ_VERSION/harfbuzz-$HARFBUZZ_VERSION.tar.xz" "harfbuzz.tar.xz"
-  rm -rf "$SRCROOT/harfbuzz-$HARFBUZZ_VERSION"
-  tar xf "$SRCROOT/harfbuzz.tar.xz" -C "$SRCROOT"
+  fetch harfbuzz "$HARFBUZZ_VERSION" "https://github.com/harfbuzz/harfbuzz/releases/download/$HARFBUZZ_VERSION/harfbuzz-$HARFBUZZ_VERSION.tar.xz"
   cd "$SRCROOT/harfbuzz-$HARFBUZZ_VERSION"
   rm -rf _build
 
@@ -141,6 +158,8 @@ build_zimg() {
   rm -rf "$SRCROOT/zimg"
   git clone --depth 1 --branch "$ZIMG_VERSION" --recurse-submodules \
     https://github.com/sekrit-twc/zimg.git "$SRCROOT/zimg"
+  # The only submodule (googletest) serves the unit tests, which are off.
+  archive_git zimg "$ZIMG_VERSION" "$SRCROOT/zimg" https://github.com/sekrit-twc/zimg.git
   cd "$SRCROOT/zimg"
   ./autogen.sh
   ./configure --host="$HOST" --prefix="$PREFIX" --enable-static --disable-shared \
@@ -155,9 +174,7 @@ build_zimg() {
 build_libass() {
   [ -f "$PREFIX/lib/pkgconfig/libass.pc" ] && { log "libass cached"; return; }
   log "libass $LIBASS_VERSION"
-  fetch "https://github.com/libass/libass/releases/download/$LIBASS_VERSION/libass-$LIBASS_VERSION.tar.gz" "libass.tar.gz"
-  rm -rf "$SRCROOT/libass-$LIBASS_VERSION"
-  tar xzf "$SRCROOT/libass.tar.gz" -C "$SRCROOT"
+  fetch libass "$LIBASS_VERSION" "https://github.com/libass/libass/releases/download/$LIBASS_VERSION/libass-$LIBASS_VERSION.tar.gz"
   cd "$SRCROOT/libass-$LIBASS_VERSION"
   ./configure --prefix="$PREFIX" --host="$HOST" --with-pic --enable-static --disable-shared \
     --disable-fast-install --disable-asm --disable-fontconfig --disable-coretext \
@@ -182,6 +199,7 @@ build_dav1d() {
   rm -rf "$SRCROOT/dav1d-$DAV1D_VERSION"
   git clone --depth 1 --branch "$DAV1D_VERSION" \
     https://github.com/videolan/dav1d.git "$SRCROOT/dav1d-$DAV1D_VERSION"
+  archive_git dav1d "$DAV1D_VERSION" "$SRCROOT/dav1d-$DAV1D_VERSION" https://github.com/videolan/dav1d.git
   cd "$SRCROOT/dav1d-$DAV1D_VERSION"
   rm -rf _build
 

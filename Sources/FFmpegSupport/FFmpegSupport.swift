@@ -5,5 +5,5 @@
 // individual modules (Libavformat, Libavcodec, ...), not this target.
 public enum FFmpegSupport {
     /// The FFmpeg release these binaries were built from.
-    public static let ffmpegVersion = "n8.1.2"
+    public static let ffmpegVersion = "n8.1.3"
 }

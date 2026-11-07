@@ -8,16 +8,16 @@
 # `import Libavcodec` etc.
 #
 # macOS-only: requires Xcode, xcrun, lipo, xcodebuild, ditto, shasum.
-# Designed to run on a GitHub Actions `macos-15` runner.
+# Designed to run on the GitHub Actions `xcode-27` runner (Xcode 27.1).
 #
 # Tunables (env):
-#   FFMPEG_VERSION   FFmpeg git tag to build      (default n8.1.2)
+#   FFMPEG_VERSION   FFmpeg git tag to build      (default n8.1.3)
 #   MIN_IOS_VERSION  Minimum deployment target    (default 16.0)
 #   USE_CCACHE       Set to 1 to wrap clang in ccache (CI sets this)
 # ===========================================================================
 set -euo pipefail
 
-FFMPEG_VERSION="${FFMPEG_VERSION:-n8.1.2}"
+FFMPEG_VERSION="${FFMPEG_VERSION:-n8.1.3}"
 MIN_IOS_VERSION="${MIN_IOS_VERSION:-16.0}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -34,20 +34,20 @@ EXTSRC="$BUILD_DIR/extsrc"       # external-lib source checkouts (per sdk)
 # The 6 libraries we ship. Order matters for link/dependency clarity.
 LIBS=(libavutil libavcodec libavformat libavfilter libswscale libswresample)
 
-# Comprehensive LGPL build (FFmpeg 8.1.2, min iOS 16). Rather than an allow-list
-# we build the FULL non-GPL component set: ALL built-in filters, all built-in
-# decoders/demuxers/muxers/parsers/bsfs, plus the external-library filters
-# (zscale via libzimg; drawtext via libfreetype+libharfbuzz+libfribidi;
-# subtitles/ass via libass) and the libdav1d fast AV1 decoder. The explicit
-# --enable-decoder/--enable-filter lists below only PIN a few must-keep
-# components; they don't narrow the full set. GPL stays OFF (no --enable-gpl, no
-# postproc, no x264/x265), so this is LGPL-clean — note this excludes the GPL
-# cropdetect filter. The VideoToolbox hardware filters scale_vt/transpose_vt
-# need iOS-16 APIs (VTPixelTransfer/RotationSessionCreate) and so come on only
-# now that min iOS is 16; yadif_videotoolbox needs Metal. There is no tonemap_vt
-# in FFmpeg — software tonemap + zscale cover HDR->SDR. Static dead-strip means
-# the consuming app only links the components it actually calls, so a large
-# catalog here doesn't bloat the app; it just never needs another rebuild.
+# Comprehensive LGPL build. Rather than an allow-list we build the FULL non-GPL
+# component set: ALL built-in filters, all built-in decoders/demuxers/muxers/
+# parsers/bsfs, plus the external-library filters (zscale via libzimg; drawtext
+# via libfreetype+libharfbuzz+libfribidi; subtitles/ass via libass) and the
+# libdav1d fast AV1 decoder. The explicit --enable-decoder/--enable-filter lists
+# below only PIN a few must-keep components; they don't narrow the full set. GPL
+# stays OFF (no --enable-gpl, no postproc, no x264/x265), so this is LGPL-clean —
+# note this excludes the GPL cropdetect filter. The VideoToolbox hardware filters
+# scale_vt/transpose_vt need iOS-16 APIs (VTPixelTransfer/RotationSessionCreate);
+# yadif_videotoolbox needs Metal. There is no tonemap_vt in FFmpeg — software
+# tonemap + zscale cover HDR->SDR. Dead-stripping does not trim the catalogue:
+# FFmpeg's registries reference every enabled component, so an app that links a
+# library carries all of its components (Stashy's IPA grew about 4.4 MB with
+# the switch to this set). Only libraries an app never references drop out.
 
 log() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 
@@ -93,7 +93,8 @@ build_one() {
   # Cross-compile the external libraries (drawtext/subtitles/zscale) into a
   # per-sdk prefix; FFmpeg finds them via pkg-config below. Skipped per-lib if
   # already installed (a cached $DEPS makes this a near no-op).
-  bash "$ROOT/scripts/build-deps.sh" "$sdk" "$depprefix" "$EXTSRC/$sdk" "$MIN_IOS_VERSION"
+  DEPS_SOURCES="$DEPS/sources" \
+    bash "$ROOT/scripts/build-deps.sh" "$sdk" "$depprefix" "$EXTSRC/$sdk" "$MIN_IOS_VERSION"
 
   rm -rf "$builddir"
   mkdir -p "$builddir" "$prefix"

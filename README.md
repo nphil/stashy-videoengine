@@ -22,15 +22,17 @@ Six static-library XCFrameworks, each with an **arm64 iOS-device** slice and an
 | `libswscale.xcframework`    | `Libswscale`    |
 | `libswresample.xcframework` | `Libswresample` |
 
-**FFmpeg version:** `n8.1.2` · **Min iOS:** 16.0 · **License:** LGPL-2.1+
+**FFmpeg version:** `n8.1.3` · **Min iOS:** 16.0 · **License:** LGPL-2.1+
 
 ### Enabled capabilities (comprehensive LGPL build, v1.1.0+)
 
 This is a **full non-GPL FFmpeg build** — every built-in LGPL filter, decoder,
 demuxer, muxer, parser and bitstream filter is compiled in, plus the external
-filter libraries below. Static dead-strip means the app only links what it
-actually calls, so the broad catalog never needs another rebuild to add a
-filter. GPL is off (no `--enable-gpl`, no x264/x265, no libpostproc).
+filter libraries below, so adding a filter never needs a rebuild. The cost is
+app size: FFmpeg's registries reference every enabled component, so an app
+that links a library carries all of its components; only libraries the app
+never references drop out. GPL is off (no `--enable-gpl`, no x264/x265, no
+libpostproc).
 
 - **Hardware encode:** `h264_videotoolbox`, `hevc_videotoolbox`,
   `prores_videotoolbox` (new in 8.x), native `aac`; `mov_text` for soft
@@ -105,8 +107,9 @@ xcframeworks each carry their own top-level module map.
 
 ## How it's built
 
-Everything runs on a GitHub Actions `macos-15` runner — there is no local Mac
-in the loop.
+Builds and tests run on GitHub Actions `xcode-27` runners (macOS 27, Xcode 27.1,
+iOS 27 SDK); the Stashy consumer check runs on `macos-15` like Stashy's own CI.
+There is no local Mac in the loop.
 
 ```
 scripts/build-ffmpeg.sh       # configure + build per-arch, create 6 xcframeworks
@@ -156,7 +159,7 @@ The build scripts in this repo are MIT (see [LICENSE](LICENSE)). The XCFramework
   is linked in.
 - `h264_videotoolbox` / `hevc_videotoolbox` are Apple framework encoders; they
   pull in no GPL.
-- FFmpeg source for the pinned tag: <https://github.com/FFmpeg/FFmpeg/tree/n8.1.2>
+- FFmpeg source for the pinned tag: <https://github.com/FFmpeg/FFmpeg/tree/n8.1.3>
 
 When shipping an app that links these, include FFmpeg's `COPYING.LGPLv2.1`, an
 attribution notice, and an offer of the corresponding source (a link to the tag
