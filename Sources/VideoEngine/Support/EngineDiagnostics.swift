@@ -14,6 +14,17 @@ public enum EngineDiagnostics {
         lines.withLock { $0 }.joined(separator: "\n")
     }
 
+    /// `ProcessInfo.thermalState` as the report spells it.
+    static func thermalState(_ state: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState) -> String {
+        switch state {
+        case .nominal: "nominal"
+        case .fair: "fair"
+        case .serious: "serious"
+        case .critical: "critical"
+        @unknown default: "unknown"
+        }
+    }
+
     static func note(_ line: String) {
         lines.withLock { lines in
             if lines.count == capacity { lines.removeFirst() }

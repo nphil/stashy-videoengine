@@ -8,7 +8,7 @@ struct LoopbackServerTests {
     @Test func servesWrittenRangesOfAGrowingFile() async throws {
         let file = try GrowingFile(Self.bytes, available: 600)
         let server = LoopbackServer(routes: [file.route("/media.mp4")], waitTimeout: 0.1)
-        let base = try server.start()
+        let base = try await server.start()
         defer { server.stop() }
 
         let partial = try await RawHTTP.get(base, "/media.mp4", range: "bytes=100-199")
@@ -34,7 +34,7 @@ struct LoopbackServerTests {
     @Test func waitingRequestWakesWhenContentChanges() async throws {
         let file = try GrowingFile(Self.bytes, available: 500)
         let server = LoopbackServer(routes: [file.route("/media.mp4")], waitTimeout: 5)
-        let base = try server.start()
+        let base = try await server.start()
         defer { server.stop() }
 
         async let response = RawHTTP.get(base, "/media.mp4", range: "bytes=600-699")
@@ -52,7 +52,7 @@ struct LoopbackServerTests {
             LoopbackRoute(path: "/pending.m3u8", .playlist { nil }),
             LoopbackRoute(path: "/index.m3u8", .playlist { "#EXTM3U\n" }),
         ], waitTimeout: 0.1)
-        let base = try server.start()
+        let base = try await server.start()
         defer { server.stop() }
 
         #expect(try await RawHTTP.get(base, "/pending.m3u8").status == 503)

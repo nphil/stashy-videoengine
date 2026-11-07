@@ -79,15 +79,15 @@ public final class RemuxSession: Sendable {
 
     /// Starts the first run and returns its playlist URL; returns the current URL when a run exists.
     /// Throws `CancellationError` after `stop()`.
-    public func start(at time: TimeInterval = 0) throws -> URL {
-        try launch(at: time, replacingCurrent: false)
+    public func start(at time: TimeInterval = 0) async throws -> URL {
+        try await launch(at: time, replacingCurrent: false)
     }
 
     /// Replaces the current run with one that starts at the keyframe at or before `time` (movie seconds)
     /// and returns its URL. The new output's timeline starts at that run's origin, so the item is
     /// positioned at `time - origin` to land on `time` exactly.
-    public func seek(to time: TimeInterval) throws -> URL {
-        try launch(at: time, replacingCurrent: true)
+    public func seek(to time: TimeInterval) async throws -> URL {
+        try await launch(at: time, replacingCurrent: true)
     }
 
     /// The player's position on the current run's timeline; production waits once it is
@@ -118,7 +118,7 @@ public final class RemuxSession: Sendable {
         }
     }
 
-    private func launch(at time: TimeInterval, replacingCurrent: Bool) throws -> URL {
+    private func launch(at time: TimeInterval, replacingCurrent: Bool) async throws -> URL {
         if !replacingCurrent, let url = try currentURL() { return url }
         let fileURL = options.tempDirectory.appendingPathComponent("\(options.tempFilePrefix)\(UUID().uuidString).mp4")
         let run = RemuxRun(fileURL: fileURL, startTime: max(0, time), openTimeout: options.openTimeout, logger: logger)
@@ -132,7 +132,7 @@ public final class RemuxSession: Sendable {
         ], queueLabel: "videoengine-remux")
         let base: URL
         do {
-            base = try server.start()
+            base = try await server.start()
         } catch {
             throw VideoEngineError.serverBindFailed
         }

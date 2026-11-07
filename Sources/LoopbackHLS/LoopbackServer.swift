@@ -45,8 +45,8 @@ public final class LoopbackServer: Sendable {
         queue = DispatchQueue(label: queueLabel, qos: .userInitiated, attributes: .concurrent)
     }
 
-    /// Starts listening and returns the base URL, `http://127.0.0.1:<port>`. Blocks for up to 5 s.
-    public func start() throws -> URL {
+    /// Starts listening and returns the base URL, `http://127.0.0.1:<port>`, once the listener is ready.
+    public func start() async throws -> URL {
         // Loopback only: a wildcard bind would let any LAN peer fetch the media without auth.
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
@@ -56,25 +56,32 @@ public final class LoopbackServer: Sendable {
         } catch {
             throw LoopbackError.bindFailed
         }
-        let ready = DispatchSemaphore(value: 0)
         listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
-        listener.stateUpdateHandler = { state in
-            switch state {
-            case .ready, .failed, .cancelled: ready.signal()
-            default: break
-            }
-        }
         state.withLockUnchecked { $0.listener = listener }
-        // The caller blocks for the ready state, possibly on the main thread. A signal from a lower-QoS queue
-        // would make that wait a priority inversion.
-        listener.start(queue: DispatchQueue(label: queue.label + ".listener", qos: .userInteractive))
-        guard ready.wait(timeout: .now() + 5) == .success else {
-            stop()
-            throw LoopbackError.timedOut
+        let listenerQueue = DispatchQueue(label: queue.label + ".listener", qos: .userInitiated)
+        let failure: LoopbackError? = await withCheckedContinuation { continuation in
+            let resumed = OSAllocatedUnfairLock(initialState: false)
+            let finish: @Sendable (LoopbackError?) -> Void = { failure in
+                let first = resumed.withLock { resumed in
+                    defer { resumed = true }
+                    return !resumed
+                }
+                if first { continuation.resume(returning: failure) }
+            }
+            listener.stateUpdateHandler = { state in
+                switch state {
+                case .ready: finish(nil)
+                case .failed, .cancelled: finish(.bindFailed)
+                default: break
+                }
+            }
+            listener.start(queue: listenerQueue)
+            // Nothing blocks on this, so the limit can outlast the 20 s freezes seen on simulator hosts.
+            listenerQueue.asyncAfter(deadline: .now() + 30) { finish(.timedOut) }
         }
-        guard let port = listener.port?.rawValue else {
+        guard failure == nil, let port = listener.port?.rawValue else {
             stop()
-            throw LoopbackError.bindFailed
+            throw failure ?? LoopbackError.bindFailed
         }
         return URL(string: "http://127.0.0.1:\(port)")!
     }

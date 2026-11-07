@@ -188,11 +188,15 @@ struct Remuxer: Sendable {
         let progress = run.progress
         let index = run.index
         let longest = index?.longestSegment ?? 0
-        logger.event("remux-end", [
+        // One line per run for the field report: what it produced, how far ahead of the viewer it got and
+        // the conditions it ran in.
+        logger.measurement("perf-run", [
             ("outcome", Self.name(of: outcome)), ("bytes", String(progress.bytesWritten)),
             ("packets", String(progress.packets)), ("media", String(format: "%.1f", progress.mediaSeconds)),
             ("segments", String(index?.segmentCount ?? 0)), ("longest", String(format: "%.3f", longest)),
             ("ms", String(milliseconds(since: run.started))),
+            ("lead_s", String(format: "%.1f", progress.mediaSeconds - run.playhead)),
+            ("avail_mb", String(os_proc_available_memory() >> 20)), ("thermal", EngineDiagnostics.thermalState()),
         ])
         // RFC 8216 requires every rounded segment duration to stay within the target.
         if let index, Int(longest.rounded()) > index.targetDuration {
@@ -526,6 +530,7 @@ struct Remuxer: Sendable {
         var sawPacket = false
         var sawSegment = false
         var lastProgress = DispatchTime.now()
+        var yielded = false
 
         func noteFirstSegment() {
             guard !sawSegment, sealer.sealedSegments > 0 else { return }
@@ -614,6 +619,13 @@ struct Remuxer: Sendable {
         run.control.extendDeadline(by: options.stallTimeout)
         while true {
             try pace(videoSeconds: videoSeconds)
+            // The viewer waits on the first segments; once one is listed and 8 s are ready, production
+            // yields to the interface.
+            if !yielded, sawSegment, videoSeconds - run.playhead >= 8 {
+                yielded = true
+                pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0)
+                logger.event("remux-qos", [("class", "utility"), ("lead_s", String(format: "%.1f", videoSeconds - run.playhead))])
+            }
             let result = av_read_frame(input.context, packet)
             if result == FF.averrorEOF, input.readError == nil { break }
             if result < 0 { throw input.readError ?? input.failure(code: result) }

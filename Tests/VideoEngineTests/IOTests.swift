@@ -67,6 +67,12 @@ struct HTTPRangeSourceTests {
         source.cancel()
         #expect(throws: CancellationError.self) { try source.bytes(at: 0, count: 10) }
     }
+
+    @Test func knownLengthNeedsNoRequest() throws {
+        // Nothing listens on the discard port, so a request would fail the call.
+        let source = HTTPRangeSource(url: URL(string: "http://127.0.0.1:9/video.mkv")!, knownLength: 1234, maxAttempts: 1)
+        #expect(try source.length() == 1234)
+    }
 }
 
 struct FileRangeSourceTests {

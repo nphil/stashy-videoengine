@@ -32,8 +32,10 @@ public final class HTTPRangeSource: ByteRangeSource {
     ///   - requestTimeout: seconds without data before a request fails and is retried.
     ///   - configuration: a private session configuration, for example one with a test `URLProtocol`. By
     ///     default all sources share one session, so a seek or a probe reuses a warm connection.
+    ///   - knownLength: the file size when the server already said (Plex's `Part.size`), which saves the
+    ///     size lookup and lets FFmpeg seek to the end of the file at once.
     public init(
-        url: URL, headers: [String: String] = [:], readAheadBytes: Int = 4 << 20,
+        url: URL, headers: [String: String] = [:], knownLength: Int64? = nil, readAheadBytes: Int = 4 << 20,
         requestTimeout: TimeInterval = 8, maxAttempts: Int = 3, configuration: URLSessionConfiguration? = nil
     ) {
         self.url = url
@@ -43,6 +45,12 @@ public final class HTTPRangeSource: ByteRangeSource {
         self.maxAttempts = max(1, maxAttempts)
         self.transport = configuration.map(HTTPTransport.init(configuration:)) ?? .shared
         self.logName = (url.host() ?? "") + "/" + url.lastPathComponent
+        if let knownLength {
+            state.withLockUnchecked { s in
+                s.size = knownLength
+                s.sizeQueried = true
+            }
+        }
     }
 
     public func length() throws -> Int64? {

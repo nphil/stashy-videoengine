@@ -13,7 +13,7 @@ struct RemuxSessionTests {
             session.stop()
         }
         defer { watchdog.cancel() }
-        let playlistURL = try session.start()
+        let playlistURL = try await session.start()
 
         var sampleEntry: String?
         var origin: TimeInterval?
@@ -67,7 +67,7 @@ struct RemuxSessionTests {
             session.stop()
         }
         defer { watchdog.cancel() }
-        let playlistURL = try session.start()
+        let playlistURL = try await session.start()
         var sampleEntry: String?
         events: for await event in session.events {
             switch event {
@@ -97,7 +97,7 @@ struct RemuxSessionTests {
             session.stop()
         }
         defer { watchdog.cancel() }
-        let base = try session.start().deletingLastPathComponent()
+        let base = try await session.start().deletingLastPathComponent()
         events: for await event in session.events {
             switch event {
             case .finished, .stopped: break events
