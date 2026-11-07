@@ -82,6 +82,10 @@ let package = Package(
             ]
         ),
         .testTarget(name: "LoopbackHLSTests", dependencies: ["LoopbackHLS"]),
-        .testTarget(name: "VideoEngineTests", dependencies: ["VideoEngine"]),
+        .testTarget(
+            name: "VideoEngineTests",
+            dependencies: ["VideoEngine"],
+            resources: [.copy("Fixtures")]
+        ),
     ]
 )
