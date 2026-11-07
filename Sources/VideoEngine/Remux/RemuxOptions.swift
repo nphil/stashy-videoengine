@@ -24,6 +24,8 @@ public struct RemuxOptions: Sendable {
     /// The Dolby Vision record to write when the source carries none, such as one built from the media
     /// server's profile, level and layer fields.
     public var dolbyVisionFallback: DolbyVisionConfiguration?
+    /// The audio stream to play and which codecs are copied rather than re-encoded to AAC.
+    public var audio = AudioPolicy()
     /// MP4 muxer options; they override the run's own (`strict`, `use_editlist`).
     public var muxerOptions: [String: String] = [:]
     /// Added to the run's movflags: `frag_keyframe+empty_moov+default_base_moof`, with `delay_moov` when

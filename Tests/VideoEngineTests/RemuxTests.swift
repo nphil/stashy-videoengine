@@ -84,5 +84,7 @@ struct RemuxSessionTests {
         let variant = String(decoding: master, as: UTF8.self)
         #expect(variant.contains("CODECS=\"hvc1.2."))
         #expect(variant.contains("VIDEO-RANGE=PQ"))
+        // Opus is not proven in AVPlayer, so it is re-encoded to AAC-LC.
+        #expect(variant.contains(",mp4a.40.2\""))
     }
 }

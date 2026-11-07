@@ -173,7 +173,19 @@ struct Remuxer: Sendable {
         if run.claimTerminal() { emit(outcome) }
     }
 
+    /// Runs the remux; when a copied audio stream breaks the muxer before any segment is published, runs
+    /// it once more with that audio re-encoded.
     private func remux() throws {
+        var copiedAudio = false
+        do {
+            try remux(forceAudioReencode: false, copiedAudio: &copiedAudio)
+        } catch let error as VideoEngineError where copiedAudio && !run.control.isStopped && (run.index?.segmentCount ?? 0) == 0 {
+            logger.event("remux-audio-retry", [("error", error.localizedDescription)])
+            try remux(forceAudioReencode: true, copiedAudio: &copiedAudio)
+        }
+    }
+
+    private func remux(forceAudioReencode: Bool, copiedAudio: inout Bool) throws {
         let source = try makeSource()
         run.attach(source)
         let opening = StageTimer("open")
@@ -187,10 +199,13 @@ struct Remuxer: Sendable {
         emit(.opened(info))
 
         let videoIndex = Self.videoStream(of: input.context)
-        let plan = Self.plan(for: input.context, videoIndex: videoIndex, options: options)
+        let audio = AudioPlan.decide(Self.audioFacts(of: input.context), policy: options.audio, forceReencode: forceAudioReencode)
+        copiedAudio = audio?.copiedCodec != nil
+        let plan = Self.plan(for: input.context, videoIndex: videoIndex, audio: audio, options: options)
         logger.event("remux-plan", [
             ("tag", plan.videoTag ?? "auto"), ("dolby-vision", "\(plan.dolbyVision)"),
             ("movflags", plan.movflags.joined(separator: "+")),
+            ("audio", audio.map { "\($0.streamIndex):\($0.codec):\($0.action)" } ?? "none"),
         ])
         if run.startTime > 0, videoIndex >= 0 { try seek(input, videoIndex: videoIndex) }
 
@@ -208,7 +223,9 @@ struct Remuxer: Sendable {
             contentChanged()
         }
         defer { output.close() }
-        let (mapping, filter) = try mapStreams(from: input.context, to: output.context, videoIndex: videoIndex, plan: plan)
+        let (mapping, filters, reencoder) = try mapStreams(
+            from: input.context, to: output.context, videoIndex: videoIndex, audio: audio, plan: plan
+        )
         var announced = false
         // With delay_moov the init segment arrives with the first fragment rather than the header.
         func announceWhenReady() {
@@ -219,8 +236,8 @@ struct Remuxer: Sendable {
         try writeHeader(output, plan: plan)
         announceWhenReady()
         try copyPackets(
-            from: input, to: output, mapping: mapping, videoIndex: videoIndex, filter: filter, sealer: sealer,
-            afterWrite: announceWhenReady
+            from: input, to: output, mapping: mapping, videoIndex: videoIndex, filters: filters, reencoder: reencoder,
+            sealer: sealer, afterWrite: announceWhenReady
         )
         run.markComplete()
         index.finish()
@@ -258,24 +275,35 @@ struct Remuxer: Sendable {
         return -1
     }
 
-    /// The mux plan for the chosen video stream and every audio stream the run copies.
+    /// The mux plan for the chosen video stream and the audio the run copies.
     private static func plan(
-        for format: UnsafeMutablePointer<AVFormatContext>, videoIndex: Int, options: RemuxOptions
+        for format: UnsafeMutablePointer<AVFormatContext>, videoIndex: Int, audio: AudioPlan?, options: RemuxOptions
     ) -> MuxPlan {
         var videoCodec: String?
         var record: DolbyVisionConfiguration?
-        var audioCodecs: [String] = []
-        for i in 0..<Int(format.pointee.nb_streams) {
-            guard let parameters = format.pointee.streams[i]?.pointee.codecpar else { continue }
-            let codec = String(cString: avcodec_get_name(parameters.pointee.codec_id))
-            if i == videoIndex {
-                videoCodec = codec
-                record = dolbyVisionRecord(of: parameters)
-            } else if parameters.pointee.codec_type == AVMEDIA_TYPE_AUDIO {
-                audioCodecs.append(codec)
-            }
+        if videoIndex >= 0, let parameters = format.pointee.streams[videoIndex]?.pointee.codecpar {
+            videoCodec = String(cString: avcodec_get_name(parameters.pointee.codec_id))
+            record = dolbyVisionRecord(of: parameters)
         }
+        let audioCodecs = audio?.copiedCodec.map { [$0] } ?? []
         return MuxPlan.decide(videoCodec: videoCodec, dolbyVision: record, audioCodecs: audioCodecs, options: options)
+    }
+
+    private static func audioFacts(of format: UnsafeMutablePointer<AVFormatContext>) -> [AudioStreamFacts] {
+        (0..<Int(format.pointee.nb_streams)).compactMap { i in
+            guard let stream = format.pointee.streams[i], let parameters = stream.pointee.codecpar,
+                  parameters.pointee.codec_type == AVMEDIA_TYPE_AUDIO else { return nil }
+            let p = parameters.pointee
+            var facts = AudioStreamFacts(
+                index: i, codec: String(cString: avcodec_get_name(p.codec_id)), channels: Int(p.ch_layout.nb_channels),
+                sampleRate: Int(p.sample_rate), bitsPerSample: Int(p.bits_per_raw_sample > 0 ? p.bits_per_raw_sample : p.bits_per_coded_sample),
+                isDefault: stream.pointee.disposition & FF.dispositionDefault != 0
+            )
+            if p.codec_id == AV_CODEC_ID_AAC, let extradata = p.extradata, p.extradata_size > 0 {
+                facts.audioSpecificConfig = Array(UnsafeBufferPointer(start: extradata, count: Int(p.extradata_size)))
+            }
+            return facts
+        }
     }
 
     /// The stream's Dolby Vision configuration record, from Matroska's block addition mapping or an MP4
@@ -310,39 +338,54 @@ struct Remuxer: Sendable {
         return max(minimum, Int(seconds.rounded(.up)))
     }
 
-    /// Adds an output stream for the chosen video stream and for each audio stream. The muxer starts a
+    /// Adds an output stream for the chosen video stream and the planned audio stream. The muxer starts a
     /// fragment at a keyframe of any video track, so a second video stream would cut segments short;
-    /// cover art and other stream types are left out too. Returns the input-to-output index table and the
-    /// filter the video packets pass through, if the plan needs one.
+    /// cover art and other stream types are left out too. Returns the input-to-output index table, the
+    /// filters packets pass through by input stream, and the audio re-encoder if the plan needs one.
     private func mapStreams(
         from input: UnsafeMutablePointer<AVFormatContext>, to output: UnsafeMutablePointer<AVFormatContext>,
-        videoIndex: Int, plan: MuxPlan
-    ) throws -> (mapping: [Int], filter: FFBitstreamFilter?) {
+        videoIndex: Int, audio: AudioPlan?, plan: MuxPlan
+    ) throws -> (mapping: [Int], filters: [Int: FFBitstreamFilter], reencoder: AudioReencoder?) {
         var mapping = [Int](repeating: -1, count: Int(input.pointee.nb_streams))
-        var filter: FFBitstreamFilter?
+        var filters: [Int: FFBitstreamFilter] = [:]
+        var reencoder: AudioReencoder?
         for i in mapping.indices {
             guard let stream = input.pointee.streams[i], let parameters = stream.pointee.codecpar else { continue }
-            guard i == videoIndex || parameters.pointee.codec_type == AVMEDIA_TYPE_AUDIO else { continue }
+            guard i == videoIndex || i == audio?.streamIndex else { continue }
             guard let outStream = avformat_new_stream(output, nil) else { throw VideoEngineError.outOfMemory }
-            var source = UnsafePointer(parameters)
-            if i == videoIndex, plan.dolbyVision == .strip {
-                let strip = try FFBitstreamFilter(
-                    name: "dovi_rpu", parameters: parameters, timeBase: stream.pointee.time_base, options: ["strip": 1]
-                )
-                source = UnsafePointer(strip.pointer.pointee.par_out)
-                filter = strip
+            mapping[i] = Int(outStream.pointee.index)
+            let parametersOut: UnsafeMutablePointer<AVCodecParameters> = outStream.pointee.codecpar
+            if i != videoIndex, case .reencode(let channels, let bitRate) = audio?.action {
+                reencoder = try AudioReencoder(stream: stream, output: outStream, channels: channels, bitRate: bitRate)
+                continue
             }
-            let copied = avcodec_parameters_copy(outStream.pointee.codecpar, source)
+            var filterName: String?
+            if i == videoIndex, plan.dolbyVision == .strip { filterName = "dovi_rpu" }
+            if i != videoIndex, audio?.action == .copyCore { filterName = "eac3_core" }
+            var source = UnsafePointer(parameters)
+            if let filterName {
+                let filter = try FFBitstreamFilter(
+                    name: filterName, parameters: parameters, timeBase: stream.pointee.time_base,
+                    options: filterName == "dovi_rpu" ? ["strip": 1] : [:]
+                )
+                source = UnsafePointer(filter.pointer.pointee.par_out)
+                filters[i] = filter
+            }
+            let copied = avcodec_parameters_copy(parametersOut, source)
             guard copied >= 0 else { throw VideoEngineError.failure("copy stream parameters", copied) }
             // The source container's tag rarely suits MP4 ("tag not found" for HEVC from Matroska), so the
             // muxer picks one unless the plan names the sample entry.
-            let parametersOut: UnsafeMutablePointer<AVCodecParameters> = outStream.pointee.codecpar
             parametersOut.pointee.codec_tag = i == videoIndex ? plan.videoTag.map(FF.tag) ?? 0 : 0
             if i == videoIndex { try Self.apply(plan, to: parametersOut) }
-            mapping[i] = Int(outStream.pointee.index)
+            if filterName == "eac3_core" {
+                // The core is 5.1; the 7.1 layout would make the muxer describe channels it no longer has.
+                av_channel_layout_uninit(&parametersOut.pointee.ch_layout)
+                let set = av_channel_layout_from_string(&parametersOut.pointee.ch_layout, "5.1(side)")
+                guard set >= 0 else { throw VideoEngineError.failure("set E-AC-3 core layout", set) }
+            }
         }
         guard mapping.contains(where: { $0 >= 0 }) else { throw VideoEngineError.noPlayableStreams }
-        return (mapping, filter)
+        return (mapping, filters, reencoder)
     }
 
     /// Writes the plan's Dolby Vision record and colour fields into the output video parameters.
@@ -432,8 +475,8 @@ struct Remuxer: Sendable {
     /// Copies packets until the end of the input, then writes the trailer. The output's timeline starts
     /// at the earliest first timestamp of the copied streams, published as the run's origin.
     private func copyPackets(
-        from input: DemuxInput, to output: MuxOutput, mapping: [Int], videoIndex: Int, filter: FFBitstreamFilter?,
-        sealer: FragmentSealer, afterWrite: () -> Void
+        from input: DemuxInput, to output: MuxOutput, mapping: [Int], videoIndex: Int,
+        filters: [Int: FFBitstreamFilter], reencoder: AudioReencoder?, sealer: FragmentSealer, afterWrite: () -> Void
     ) throws {
         let reading = try FFPacket()
         let filtered = try FFPacket()
@@ -548,16 +591,21 @@ struct Remuxer: Sendable {
                 av_packet_unref(packet)
                 continue
             }
-            if inIndex == videoIndex, let filter {
+            if let filter = filters[inIndex] {
                 try filter.send(packet)
                 while try filter.receive(into: filtered.pointer) { try deliver(filtered.pointer) }
+            } else if let reencoder, inIndex == reencoder.streamIndex {
+                for owner in try reencoder.process(packet) { try deliver(owner.pointer) }
             } else {
                 try deliver(packet)
             }
         }
-        if let filter {
+        for filter in filters.values {
             try filter.send(nil)
             while try filter.receive(into: filtered.pointer) { try deliver(filtered.pointer) }
+        }
+        if let reencoder {
+            for owner in try reencoder.process(nil) { try deliver(owner.pointer) }
         }
         if shifts == nil, !held.isEmpty { try release() }
         let trailer = av_write_trailer(output.context)
