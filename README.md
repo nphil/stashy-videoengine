@@ -61,6 +61,25 @@ libpostproc).
 - **Protocols:** file, pipe, **http, https, tls** (SecureTransport). The app may
   still feed remote input via a custom `AVIOContext`; networking is a fallback.
 
+### VideoEngine library (v1.4.0+)
+
+The `VideoEngine` product is the Swift layer that plays and downloads media on
+top of these binaries, shared by Stashy and Marquee (Swift 6, strict
+concurrency):
+
+- `MediaProbe.probe` returns `MediaInfo`: container, streams, colour and HDR
+  details.
+- `ByteRangeSources.make` reads a `file://` or `http(s)://` URL with URLSession
+  range requests and feeds FFmpeg through a custom `AVIOContext`; FFmpeg never
+  opens a network URL itself.
+- `RemuxSession` plays what AVPlayer cannot open (Matroska, for instance): audio
+  and video are copied, without re-encoding, into a growing fragmented MP4 that
+  `LoopbackServer` serves as HLS on 127.0.0.1.
+- `FileTranscoder` re-encodes a local file in one VideoToolbox pass;
+  `ChunkedTranscoder` works in chunks of about 20 s and resumes where an
+  interrupted run stopped.
+- Logging goes through an `EngineLogger` the app supplies.
+
 ## Consuming from the Stashy app
 
 Add this repo as a Swift Package dependency (the `FFmpeg` product pulls in all
@@ -73,6 +92,7 @@ six binary targets plus the required system frameworks):
 ```swift
 .target(name: "Stashy", dependencies: [
     .product(name: "FFmpeg", package: "stashy-videoengine"),
+    .product(name: "VideoEngine", package: "stashy-videoengine"),  // v1.4.0+
 ])
 ```
 
