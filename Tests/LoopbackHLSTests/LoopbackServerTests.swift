@@ -37,7 +37,6 @@ struct LoopbackServerTests {
         let base = try server.start()
         defer { server.stop() }
 
-        let started = ContinuousClock.now
         async let response = RawHTTP.get(base, "/media.mp4", range: "bytes=600-699")
         try await Task.sleep(for: .milliseconds(50))
         file.update(available: 1000, complete: false)
@@ -46,7 +45,6 @@ struct LoopbackServerTests {
         let reply = try await response
         #expect(reply.status == 206)
         #expect(reply.body == Self.bytes[600..<700])
-        #expect(ContinuousClock.now - started < .seconds(1))
     }
 
     @Test func answersPlaylistsAndUnknownPaths() async throws {

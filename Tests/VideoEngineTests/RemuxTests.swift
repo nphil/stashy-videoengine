@@ -7,8 +7,9 @@ struct RemuxSessionTests {
         let fixture = try Fixture.url("h264-aac.mkv")
         let session = RemuxSession(sourceFactory: { try FileRangeSource(fileURL: fixture) })
         defer { session.stop() }
+        // Only catches a hung run: simulator hosts have frozen test processes for over 10 s.
         let watchdog = Task {
-            try await Task.sleep(for: .seconds(10))
+            try await Task.sleep(for: .seconds(60))
             session.stop()
         }
         defer { watchdog.cancel() }
