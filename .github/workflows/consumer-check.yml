@@ -26,7 +26,8 @@ on:
 jobs:
   stashy:
     name: Stashy builds against the engine
-    runs-on: macos-15
+    # Stashy builds on the xcode-27 image with Xcode 27.1 (2026-11-07); the check matches it.
+    runs-on: xcode-27
     timeout-minutes: 45
     steps:
       - name: Check out the engine
@@ -81,10 +82,9 @@ jobs:
           print(m.group(1) + "stashy-videoengine:\n" + entry, end="")
           PY
 
-      - name: Select Stashy's Xcode (newest installed)
+      - name: Select Stashy's Xcode
         run: |
-          LATEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
-          sudo xcode-select -s "$LATEST"
+          sudo xcode-select -s /Applications/Xcode_27.1.app
           xcodebuild -version
 
       - name: Generate the Xcode project
