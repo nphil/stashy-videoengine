@@ -35,14 +35,6 @@ else
     || die "Package.swift is stale; regenerate: bash scripts/gen-package-swift.sh > Package.swift"
 fi
 
-log "Resolving packages"
-attempt=1
-until xcodebuild -resolvePackageDependencies -derivedDataPath "$WORK/DD"; do
-  [ "$attempt" -lt 3 ] || die "package resolution failed 3 times"
-  sleep $((attempt * 20))
-  attempt=$((attempt + 1))
-done
-
 SCHEMES="$(xcodebuild -list -json | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
@@ -60,6 +52,14 @@ if [ -z "$SCHEME" ]; then
   done
 fi
 [ -n "$SCHEME" ] || die "no package scheme to build"
+
+log "Resolving packages"
+attempt=1
+until xcodebuild -resolvePackageDependencies -scheme "$SCHEME" -derivedDataPath "$WORK/DD"; do
+  [ "$attempt" -lt 3 ] || die "package resolution failed 3 times"
+  sleep $((attempt * 20))
+  attempt=$((attempt + 1))
+done
 
 # Naming every test target makes xcodebuild fail when the scheme leaves one
 # out, instead of passing with fewer tests run.
