@@ -19,6 +19,7 @@ let package = Package(
                 "FFmpegSupport",
             ]
         ),
+        .library(name: "VideoEngine", targets: ["VideoEngine", "LoopbackHLS"]),
     ],
     targets: [
         .binaryTarget(
@@ -72,6 +73,15 @@ let package = Package(
             ]
         ),
         .target(name: "LoopbackHLS"),
+        .target(
+            name: "VideoEngine",
+            dependencies: [
+                "LoopbackHLS", "FFmpegSupport",
+                "avutil", "avcodec", "avformat",
+                "avfilter", "swscale", "swresample",
+            ]
+        ),
         .testTarget(name: "LoopbackHLSTests", dependencies: ["LoopbackHLS"]),
+        .testTarget(name: "VideoEngineTests", dependencies: ["VideoEngine"]),
     ]
 )
