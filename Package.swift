@@ -71,5 +71,7 @@ let package = Package(
                 .linkedFramework("Metal"),
             ]
         ),
+        .target(name: "LoopbackHLS"),
+        .testTarget(name: "LoopbackHLSTests", dependencies: ["LoopbackHLS"]),
     ]
 )
