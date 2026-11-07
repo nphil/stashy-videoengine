@@ -1,34 +1,53 @@
 import Foundation
 import os
 
-/// Reads an HTTP(S) resource with `Range` requests. Each miss fetches `readAheadBytes` in one request, and
-/// the sequential reads that follow are served from that slab.
+/// Reads an HTTP(S) resource with `Range` requests.
+///
+/// A read that no request covers starts a small one, so the header, the index at the end of the file and
+/// the resume point each cost one round trip rather than a full read-ahead. Each request that continues a
+/// sequential run is twice the size of the one before, up to `readAheadBytes`, and once a request is half
+/// read the next two are already in flight, so the link does not idle between them. A read returns as soon
+/// as its first bytes arrive, and recently used requests stay cached, so going back to the head of the file
+/// after reading its tail costs nothing.
 ///
 /// A response is used only when it is the requested bytes: 206 with a `Content-Range` that starts at the
 /// requested offset, or 200 for a request at offset 0. Error bodies never reach the caller, and a dropped
 /// connection is retried and then reported as a failure, never as the end of the file.
 public final class HTTPRangeSource: ByteRangeSource {
+    /// Size of the request that starts a run.
+    static let firstRequestBytes = 512 << 10
+    /// Requests kept in flight past the one being read.
+    static let pipelineDepth = 2
+
     public let logName: String
     private let url: URL
     private let headers: [String: String]
     private let readAheadBytes: Int
+    private let cacheBytes: Int
     private let requestTimeout: TimeInterval
     private let maxAttempts: Int
     private let transport: HTTPTransport
+    private let meter = TransferMeter()
     private let state = OSAllocatedUnfairLock(uncheckedState: State())
     private let wake = DispatchSemaphore(value: 0)
 
     private struct State {
-        var cache: Slab?
+        /// Requests in flight and finished ones kept for re-reads, least recently used first.
+        var entries: [Entry] = []
         var size: Int64?
         var sizeQueried = false
         var cancelled = false
-        var task: URLSessionDataTask?
+    }
+
+    private struct Entry {
+        let fetch: RangeFetch
+        /// A read has used it. A jump drops the requests nothing has read, so they stop taking bandwidth.
+        var used: Bool
     }
 
     /// - Parameters:
     ///   - headers: added to every request; the place for credentials, so they stay out of URLs and logs.
-    ///   - readAheadBytes: bytes fetched per request; 0 fetches only what each read asks for.
+    ///   - readAheadBytes: the largest request; 0 fetches only what each read asks for, without read-ahead.
     ///   - requestTimeout: seconds without data before a request fails and is retried.
     ///   - configuration: a private session configuration, for example one with a test `URLProtocol`. By
     ///     default all sources share one session, so a seek or a probe reuses a warm connection.
@@ -41,6 +60,7 @@ public final class HTTPRangeSource: ByteRangeSource {
         self.url = url
         self.headers = headers
         self.readAheadBytes = max(0, readAheadBytes)
+        cacheBytes = 6 * max(self.readAheadBytes, Self.firstRequestBytes)
         self.requestTimeout = requestTimeout
         self.maxAttempts = max(1, maxAttempts)
         self.transport = configuration.map(HTTPTransport.init(configuration:)) ?? .shared
@@ -53,12 +73,15 @@ public final class HTTPRangeSource: ByteRangeSource {
         }
     }
 
+    public var bytesPerSecond: Double? { meter.bytesPerSecond() }
+
     public func length() throws -> Int64? {
         try checkCancelled()
         let (size, queried) = state.withLockUnchecked { ($0.size, $0.sizeQueried) }
         if size != nil || queried { return size }
         // The head of the file is what FFmpeg reads first anyway, so learning the size costs no extra request.
-        _ = try fetch(at: 0, minimumLength: 1)
+        var first: UInt8 = 0
+        _ = try withUnsafeMutableBytes(of: &first) { try read(at: 0, into: $0) }
         return state.withLockUnchecked { s in
             s.sizeQueried = true
             return s.size
@@ -68,63 +91,127 @@ public final class HTTPRangeSource: ByteRangeSource {
     public func read(at offset: Int64, into buffer: UnsafeMutableRawBufferPointer) throws -> Int {
         try checkCancelled()
         guard buffer.count > 0 else { return 0 }
-        if let count = state.withLockUnchecked({ $0.cache })?.copy(from: offset, into: buffer) { return count }
-        guard let slab = try fetch(at: offset, minimumLength: buffer.count) else { return 0 }
-        return slab.copy(from: offset, into: buffer) ?? 0
-    }
-
-    public func cancel() {
-        let task = state.withLockUnchecked { s -> URLSessionDataTask? in
-            s.cancelled = true
-            return s.task
-        }
-        task?.cancel()
-        wake.signal()
-    }
-
-    /// The slab starting at `offset`, or nil at the end of the file.
-    private func fetch(at offset: Int64, minimumLength: Int) throws -> Slab? {
-        let size = state.withLockUnchecked { $0.size }
-        if let size, offset >= size { return nil }
-        var last = offset + Int64(max(minimumLength, readAheadBytes)) - 1
-        if let size { last = min(last, size - 1) }
-        var attempt = 1
+        var failures = 0
         while true {
-            switch try request(offset...last) {
-            case .bytes(let slab, let total):
-                state.withLockUnchecked { s in
-                    s.cache = slab
-                    if let total { s.size = total }
-                }
-                return slab
-            case .endOfFile(let total):
-                if let total { state.withLockUnchecked { $0.size = total } }
-                return nil
-            case .retry where attempt < maxAttempts:
-                attempt += 1
-                try pause(seconds: 0.5)
-            case .retry(let error), .fail(let error):
+            guard let found = try fetch(covering: offset, count: buffer.count) else { return 0 }
+            let current = found.fetch
+            let arrived = current.wait(for: offset)
+            try checkCancelled()
+            if let total = current.total { state.withLockUnchecked { $0.size = total } }
+            if arrived {
+                let count = current.copy(from: offset, into: buffer)
+                extendPipeline(from: current, readingAt: offset)
+                return count
+            }
+            switch current.outcome() {
+            case .endOfFile:
+                return 0
+            case .fail(let error):
                 throw error
+            case .retry(let error):
+                // A request that stopped short of this read is simply asked again from here; only one made
+                // for this read counts against it.
+                guard found.started else { continue }
+                failures += 1
+                if failures >= maxAttempts { throw error }
+                try pause(seconds: 0.5)
             }
         }
     }
 
-    private func request(_ range: ClosedRange<Int64>) throws -> RangeOutcome {
-        try checkCancelled()
+    public func cancel() {
+        let fetches = state.withLockUnchecked { s -> [RangeFetch] in
+            s.cancelled = true
+            return s.entries.map(\.fetch)
+        }
+        for fetch in fetches { fetch.abandon() }
+        wake.signal()
+    }
+
+    /// The request that has, or is about to receive, the byte at `offset`, starting one when none covers
+    /// it; `started` is true for a new one. Nil at the end of the file.
+    private func fetch(covering offset: Int64, count: Int) throws -> (fetch: RangeFetch, started: Bool)? {
+        var dropped: [RangeFetch] = []
+        let found = try state.withLockUnchecked { s -> (fetch: RangeFetch, started: Bool)? in
+            if s.cancelled { throw CancellationError() }
+            if let size = s.size, offset >= size { return nil }
+            // Waiting on a running request beats starting another only when the byte is close behind
+            // what has arrived.
+            let reach = Int64(max(count, Self.firstRequestBytes))
+            if let i = s.entries.firstIndex(where: { $0.fetch.covers(offset, reach: reach) }) {
+                var entry = s.entries.remove(at: i)
+                entry.used = true
+                s.entries.append(entry)
+                return (entry.fetch, false)
+            }
+            for entry in s.entries where !entry.used && !entry.fetch.isFinished { dropped.append(entry.fetch) }
+            let length = readAheadBytes > 0 ? max(count, min(Self.firstRequestBytes, readAheadBytes)) : count
+            let fetch = RangeFetch(start: offset, limit: Self.clamp(length, at: offset, size: s.size), meter: meter)
+            s.entries.append(Entry(fetch: fetch, used: true))
+            evict(&s)
+            return (fetch, true)
+        }
+        for fetch in dropped { fetch.abandon() }
+        if let found, found.started { begin(found.fetch) }
+        return found
+    }
+
+    /// Once a read passes the middle of `fetch`, starts the requests that continue it, each twice the size
+    /// of the one before up to `readAheadBytes`.
+    private func extendPipeline(from fetch: RangeFetch, readingAt offset: Int64) {
+        guard readAheadBytes > 0, (offset - fetch.start) * 2 >= Int64(fetch.limit) else { return }
+        let started = state.withLockUnchecked { s -> [RangeFetch] in
+            guard !s.cancelled else { return [] }
+            var started: [RangeFetch] = []
+            var next = fetch.end
+            var length = fetch.limit
+            for _ in 0..<Self.pipelineDepth {
+                if let size = s.size, next >= size { break }
+                if let ahead = s.entries.first(where: { $0.fetch.start <= next && next < $0.fetch.end })?.fetch {
+                    next = ahead.end
+                    length = ahead.limit
+                    continue
+                }
+                length = min(length * 2, readAheadBytes)
+                let ahead = RangeFetch(start: next, limit: Self.clamp(length, at: next, size: s.size), meter: meter)
+                s.entries.append(Entry(fetch: ahead, used: false))
+                started.append(ahead)
+                next = ahead.end
+            }
+            evict(&s)
+            return started
+        }
+        for ahead in started { begin(ahead) }
+    }
+
+    /// Drops requests that ended without bytes, then the least recently used finished ones until the cache
+    /// fits `cacheBytes`. Requests in flight stay; the pipeline already bounds them.
+    private func evict(_ s: inout State) {
+        s.entries.removeAll { $0.fetch.isFinished && $0.fetch.received == 0 }
+        var total = s.entries.reduce(0) { $0 + $1.fetch.limit }
+        var i = 0
+        while total > cacheBytes, i < s.entries.count - 1 {
+            let fetch = s.entries[i].fetch
+            if fetch.isFinished {
+                total -= fetch.limit
+                s.entries.remove(at: i)
+            } else {
+                i += 1
+            }
+        }
+    }
+
+    private func begin(_ fetch: RangeFetch) {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: requestTimeout)
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
-        request.setValue("bytes=\(range.lowerBound)-\(range.upperBound)", forHTTPHeaderField: "Range")
-        let fetch = RangeFetch(start: range.lowerBound, limit: Int(range.upperBound - range.lowerBound + 1))
-        let task = transport.start(request, for: fetch)
-        let cancelled = state.withLockUnchecked { s -> Bool in
-            s.task = task
-            return s.cancelled
-        }
-        if cancelled { task.cancel() }
-        fetch.wait()
-        state.withLockUnchecked { $0.task = nil }
-        try checkCancelled()
-        return fetch.outcome()
+        request.setValue("bytes=\(fetch.start)-\(fetch.start + Int64(fetch.limit) - 1)", forHTTPHeaderField: "Range")
+        meter.began()
+        fetch.attach(transport.start(request, for: fetch))
+    }
+
+    private static func clamp(_ length: Int, at offset: Int64, size: Int64?) -> Int {
+        guard let size else { return length }
+        return Int(min(Int64(length), size - offset))
     }
 
     /// Waits between attempts; `cancel()` cuts the wait short.
@@ -136,25 +223,84 @@ public final class HTTPRangeSource: ByteRangeSource {
     private func checkCancelled() throws {
         if state.withLockUnchecked({ $0.cancelled }) { throw CancellationError() }
     }
+
+    /// Start offsets and lengths of the cached and running requests, least recently used first.
+    var requestedRanges: [(start: Int64, limit: Int)] {
+        state.withLockUnchecked { s in s.entries.map { ($0.fetch.start, $0.fetch.limit) } }
+    }
 }
 
-/// Contiguous bytes of the resource starting at `start`.
-struct Slab: Sendable {
-    let start: Int64
-    let bytes: Data
+/// Download rate over the last few seconds during which a request was in flight, so a reader that pauses
+/// still sees what the link carried rather than zero.
+final class TransferMeter: Sendable {
+    private struct Sample: Sendable {
+        var busy: UInt64
+        var bytes: Int64
+    }
 
-    /// Copies from `offset` when the slab holds it, returning the count; nil when it does not.
-    func copy(from offset: Int64, into buffer: UnsafeMutableRawBufferPointer) -> Int? {
-        guard offset >= start, offset < start + Int64(bytes.count), let target = buffer.baseAddress else { return nil }
-        let from = Int(offset - start)
-        let count = min(buffer.count, bytes.count - from)
-        bytes.withUnsafeBytes { source in target.copyMemory(from: source.baseAddress! + from, byteCount: count) }
-        return count
+    private struct State: Sendable {
+        var active = 0
+        var busySince: UInt64 = 0
+        var busyBefore: UInt64 = 0
+        var bytes: Int64 = 0
+        /// Busy time and total bytes, one sample per `step` of busy time over the last `window`.
+        var samples: [Sample] = []
+
+        func busy(at now: UInt64) -> UInt64 { busyBefore + (active > 0 ? now - busySince : 0) }
+    }
+
+    private static let window: UInt64 = 5_000_000_000
+    private static let step: UInt64 = 250_000_000
+    private let clock: @Sendable () -> UInt64
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    init(clock: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }) {
+        self.clock = clock
+    }
+
+    func began() {
+        let now = clock()
+        state.withLock { s in
+            if s.active == 0 { s.busySince = now }
+            s.active += 1
+            if s.samples.isEmpty { s.samples.append(Sample(busy: s.busy(at: now), bytes: s.bytes)) }
+        }
+    }
+
+    func ended() {
+        let now = clock()
+        state.withLock { s in
+            guard s.active > 0 else { return }
+            s.active -= 1
+            if s.active == 0 { s.busyBefore += now - s.busySince }
+        }
+    }
+
+    func received(_ count: Int) {
+        guard count > 0 else { return }
+        let now = clock()
+        state.withLock { s in
+            s.bytes += Int64(count)
+            let busy = s.busy(at: now)
+            guard let last = s.samples.last, busy >= last.busy + Self.step else { return }
+            s.samples.append(Sample(busy: busy, bytes: s.bytes))
+            if s.samples.count > Int(Self.window / Self.step) + 1 { s.samples.removeFirst() }
+        }
+    }
+
+    /// Nil until bytes have arrived.
+    func bytesPerSecond() -> Double? {
+        let now = clock()
+        return state.withLock { s -> Double? in
+            guard let base = s.samples.first else { return nil }
+            let busy = s.busy(at: now)
+            guard busy > base.busy, s.bytes > base.bytes else { return nil }
+            return Double(s.bytes - base.bytes) / (Double(busy - base.busy) / 1e9)
+        }
     }
 }
 
 enum RangeOutcome: Sendable {
-    case bytes(Slab, total: Int64?)
     case endOfFile(total: Int64?)
     /// A failure worth another attempt: no response, a dropped connection, 408, 429 or 5xx.
     case retry(VideoEngineError)
@@ -187,12 +333,18 @@ struct ContentRange: Equatable, Sendable {
     }
 }
 
-/// One range request in flight: the session's delegate queue feeds it and the reading thread waits on it.
+/// One range request. The session's delegate queue feeds it, and readers take its bytes as they arrive.
 final class RangeFetch: Sendable {
     enum Verdict: Sendable {
         case accepted(total: Int64?)
         case rejected(status: Int, total: Int64?)
         case mismatched(String)
+    }
+
+    private struct Waiter: Sendable {
+        /// Body length that satisfies the reader.
+        let needed: Int
+        let signal: DispatchSemaphore
     }
 
     private struct State: Sendable {
@@ -201,58 +353,139 @@ final class RangeFetch: Sendable {
         var failure: URLError.Code?
         /// Set when the fetch cancelled its own task, so the resulting cancellation error is not a failure.
         var stoppedEarly = false
+        var finished = false
+        /// Stopped by the source; the bytes that arrived stay readable.
+        var abandoned = false
+        var waiters: [Waiter] = []
     }
 
     let start: Int64
     let limit: Int
+    private let meter: TransferMeter
     private let state = OSAllocatedUnfairLock(initialState: State())
-    private let done = DispatchSemaphore(value: 0)
+    private let task = OSAllocatedUnfairLock<URLSessionDataTask?>(uncheckedState: nil)
 
-    init(start: Int64, limit: Int) {
+    init(start: Int64, limit: Int, meter: TransferMeter) {
         self.start = start
         self.limit = limit
+        self.meter = meter
+    }
+
+    var received: Int { state.withLock { $0.body.count } }
+
+    var isFinished: Bool { state.withLock { $0.finished || $0.abandoned } }
+
+    /// Where the bytes end once the request is done: the requested end while it runs.
+    var end: Int64 {
+        let (count, done) = state.withLock { ($0.body.count, $0.finished || $0.abandoned) }
+        return start + Int64(done ? count : limit)
+    }
+
+    /// The resource's size, as the response stated it.
+    var total: Int64? {
+        switch state.withLock({ $0.verdict }) {
+        case .accepted(let total)?, .rejected(416, let total)?: return total
+        default: return nil
+        }
+    }
+
+    /// Whether a read at `offset` should use this request: the byte has arrived, or the request is still
+    /// running and the byte is less than `reach` past what has arrived.
+    func covers(_ offset: Int64, reach: Int64) -> Bool {
+        guard offset >= start, offset < start + Int64(limit) else { return false }
+        let (count, running) = state.withLock { ($0.body.count, !$0.finished && !$0.abandoned) }
+        let arrived = start + Int64(count)
+        return offset < arrived || (running && offset - arrived < reach)
+    }
+
+    func attach(_ task: URLSessionDataTask) {
+        self.task.withLockUnchecked { $0 = task }
+        if state.withLock({ $0.abandoned }) { task.cancel() }
+    }
+
+    /// Stops the request and wakes every reader waiting on it.
+    func abandon() {
+        let waiting = state.withLock { s -> [DispatchSemaphore] in
+            s.abandoned = true
+            let signals = s.waiters.map(\.signal)
+            s.waiters = []
+            return signals
+        }
+        task.withLockUnchecked { $0 }?.cancel()
+        for signal in waiting { signal.signal() }
+    }
+
+    /// Blocks until the byte at `offset` has arrived or the request has ended; true when it has arrived.
+    func wait(for offset: Int64) -> Bool {
+        let needed = Int(offset - start) + 1
+        let signal = state.withLock { s -> DispatchSemaphore? in
+            if s.body.count >= needed || s.finished || s.abandoned { return nil }
+            let signal = DispatchSemaphore(value: 0)
+            s.waiters.append(Waiter(needed: needed, signal: signal))
+            return signal
+        }
+        signal?.wait()
+        return state.withLock { $0.body.count >= needed }
+    }
+
+    /// Copies the bytes that have arrived from `offset` on; returns the count.
+    func copy(from offset: Int64, into buffer: UnsafeMutableRawBufferPointer) -> Int {
+        state.withLockUnchecked { s in
+            let from = Int(offset - start)
+            guard from >= 0, from < s.body.count, let target = buffer.baseAddress else { return 0 }
+            let count = min(buffer.count, s.body.count - from)
+            s.body.withUnsafeBytes { source in target.copyMemory(from: source.baseAddress! + from, byteCount: count) }
+            return count
+        }
     }
 
     /// Adds body bytes; false means the task should be cancelled because the response is unusable or the
     /// requested length has arrived.
     func receive(_ data: Data, response: URLResponse?) -> Bool {
         let verdict = state.withLock { $0.verdict } == nil ? Self.verdict(for: response, start: start) : nil
-        return state.withLock { s in
+        let (more, ready, added) = state.withLock { s -> (Bool, [DispatchSemaphore], Int) in
             if s.verdict == nil { s.verdict = verdict ?? .mismatched("not an HTTP response") }
             guard case .accepted = s.verdict else {
                 s.stoppedEarly = true
-                return false
+                return (false, [], 0)
             }
             if s.body.isEmpty { s.body.reserveCapacity(limit) }
-            s.body.append(data.prefix(limit - s.body.count))
-            if s.body.count >= limit {
-                s.stoppedEarly = true
-                return false
-            }
-            return true
+            let chunk = data.prefix(limit - s.body.count)
+            s.body.append(chunk)
+            let count = s.body.count
+            let ready = s.waiters.filter { $0.needed <= count }.map(\.signal)
+            s.waiters.removeAll { $0.needed <= count }
+            if count >= limit { s.stoppedEarly = true }
+            return (count < limit, ready, chunk.count)
         }
+        meter.received(added)
+        for signal in ready { signal.signal() }
+        return more
     }
 
     func complete(response: URLResponse?, error: (any Error)?) {
         let verdict = Self.verdict(for: response, start: start)
         let failure = error.map { ($0 as? URLError)?.code ?? .unknown }
-        state.withLock { s in
+        let waiting = state.withLock { s -> [DispatchSemaphore] in
             if s.verdict == nil { s.verdict = verdict }
             if !s.stoppedEarly { s.failure = failure }
+            s.finished = true
+            let signals = s.waiters.map(\.signal)
+            s.waiters = []
+            return signals
         }
-        done.signal()
+        meter.ended()
+        for signal in waiting { signal.signal() }
     }
 
-    func wait() { done.wait() }
-
+    /// Why the request ended before a reader's byte, once `wait(for:)` has returned false.
     func outcome() -> RangeOutcome {
-        let s = state.withLock { $0 }
-        switch s.verdict {
+        let (verdict, failure, empty) = state.withLock { ($0.verdict, $0.failure, $0.body.isEmpty) }
+        switch verdict {
         case .accepted(let total):
-            // Bytes that arrived before a dropped connection are still the right bytes.
-            if !s.body.isEmpty { return .bytes(Slab(start: start, bytes: s.body), total: total) }
-            if s.failure == nil, start == 0, total == 0 { return .endOfFile(total: 0) }
-            return .retry(s.failure == nil ? .unsupportedSource("empty response at byte \(start)") : .sourceUnreachable(status: nil))
+            if empty, failure == nil, start == 0, total == 0 { return .endOfFile(total: 0) }
+            if empty, failure == nil { return .retry(.unsupportedSource("empty response at byte \(start)")) }
+            return .retry(.sourceUnreachable(status: nil))
         case .rejected(416, let total):
             if let total, start < total { return .fail(.unsupportedSource("416 for byte \(start) of \(total)")) }
             return .endOfFile(total: total)

@@ -38,7 +38,12 @@ final class RemuxRun: Sendable {
         self.logger = logger
     }
 
-    var progress: RemuxProgress { state.withLock { $0.progress } }
+    var progress: RemuxProgress {
+        let (progress, source) = state.withLock { ($0.progress, $0.source) }
+        var current = progress
+        current.sourceBytesPerSecond = source?.bytesPerSecond
+        return current
+    }
     var bytesWritten: Int64 { state.withLock { $0.progress.bytesWritten } }
     var isComplete: Bool { state.withLock { $0.complete } }
     var playhead: TimeInterval { state.withLock { $0.playhead } }

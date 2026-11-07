@@ -58,12 +58,18 @@ public struct RemuxProgress: Sendable, Equatable {
     public var packets: Int
     /// True while production waits for the playhead.
     public var isPaced: Bool
+    /// The source's recent download rate (`ByteRangeSource.bytesPerSecond`); nil for a local file.
+    public var sourceBytesPerSecond: Double?
 
-    public init(bytesWritten: Int64 = 0, mediaSeconds: TimeInterval = 0, packets: Int = 0, isPaced: Bool = false) {
+    public init(
+        bytesWritten: Int64 = 0, mediaSeconds: TimeInterval = 0, packets: Int = 0, isPaced: Bool = false,
+        sourceBytesPerSecond: Double? = nil
+    ) {
         self.bytesWritten = bytesWritten
         self.mediaSeconds = mediaSeconds
         self.packets = packets
         self.isPaced = isPaced
+        self.sourceBytesPerSecond = sourceBytesPerSecond
     }
 }
 

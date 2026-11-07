@@ -14,6 +14,13 @@ public protocol ByteRangeSource: Sendable {
     /// Stops the source for good: a blocked call returns promptly and every later call throws
     /// `CancellationError`.
     func cancel()
+    /// Recent download rate over the network, counted only while bytes were being fetched; nil for a
+    /// local file or before the first bytes.
+    var bytesPerSecond: Double? { get }
+}
+
+extension ByteRangeSource {
+    public var bytesPerSecond: Double? { nil }
 }
 
 public enum ByteRangeSources {

@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Testing
 @testable import VideoEngine
 
@@ -72,6 +73,72 @@ struct HTTPRangeSourceTests {
         // Nothing listens on the discard port, so a request would fail the call.
         let source = HTTPRangeSource(url: URL(string: "http://127.0.0.1:9/video.mkv")!, knownLength: 1234, maxAttempts: 1)
         #expect(try source.length() == 1234)
+    }
+
+    /// How a Matroska file opens: the head, the index at the end, then the head again.
+    @Test func keepsTheHeadCachedWhileTheTailIsRead() throws {
+        let body = Self.pattern(count: 3 << 20)
+        let source = FakeHTTP.source(readAheadBytes: 4 << 20, FakeHTTP.ranged(body))
+        _ = try source.bytes(at: 0, count: 64 << 10)
+        _ = try source.bytes(at: Int64(body.count - 1000), count: 1000)
+        let head = try source.bytes(at: 6498, count: 64 << 10)
+        #expect(head == body.subdata(in: 6498..<(6498 + head.count)))
+        let requests = source.requestedRanges.sorted { $0.start < $1.start }
+        #expect(requests.map(\.start) == [0, Int64(body.count - 1000)])
+        #expect(requests.map(\.limit) == [512 << 10, 1000])
+    }
+
+    @Test func growsSequentialRequestsAndKeepsTheNextTwoInFlight() throws {
+        let body = Self.pattern(count: 4 << 20)
+        let source = FakeHTTP.source(readAheadBytes: 2 << 20, FakeHTTP.ranged(body))
+        var read = Data()
+        while read.count < 512 << 10 { read += try source.bytes(at: Int64(read.count), count: 256 << 10) }
+        let requests = source.requestedRanges.sorted { $0.start < $1.start }
+        #expect(requests.map(\.start) == [0, 512 << 10, 1536 << 10])
+        #expect(requests.map(\.limit) == [512 << 10, 1 << 20, 2 << 20])
+        while read.count < body.count { read += try source.bytes(at: Int64(read.count), count: 256 << 10) }
+        #expect(read == body)
+    }
+
+    @Test func readersTakeBytesAsTheyArrive() throws {
+        let fetch = RangeFetch(start: 100, limit: 200, meter: TransferMeter())
+        let response = HTTPURLResponse(
+            url: URL(string: "http://fake.test/video.mkv")!, statusCode: 206, httpVersion: nil,
+            headerFields: ["Content-Range": "bytes 100-299/1000"]
+        )
+        #expect(fetch.receive(Data(repeating: 7, count: 50), response: response))
+        #expect(fetch.wait(for: 120))
+        #expect(fetch.covers(200, reach: 512))
+        var buffer = [UInt8](repeating: 0, count: 100)
+        #expect(buffer.withUnsafeMutableBytes { fetch.copy(from: 120, into: $0) } == 30)
+        fetch.complete(response: response, error: URLError(.networkConnectionLost))
+        #expect(!fetch.wait(for: 150))
+        #expect(!fetch.covers(150, reach: 512))
+    }
+
+    /// A paused reader still sees what the link carried, not the pause.
+    @Test func meterCountsOnlyTimeWithARequestInFlight() {
+        let now = OSAllocatedUnfairLock(initialState: UInt64(0))
+        let meter = TransferMeter(clock: { now.withLock { $0 } })
+        meter.began()
+        now.withLock { $0 = 1_000_000_000 }
+        meter.received(1_000_000)
+        meter.ended()
+        now.withLock { $0 = 11_000_000_000 }
+        meter.began()
+        now.withLock { $0 = 12_000_000_000 }
+        meter.received(1_000_000)
+        meter.ended()
+        now.withLock { $0 = 20_000_000_000 }
+        #expect(meter.bytesPerSecond() == 1_000_000)
+    }
+
+    private static func pattern(count: Int) -> Data {
+        var data = Data(count: count)
+        data.withUnsafeMutableBytes { bytes in
+            for i in 0..<count { bytes[i] = UInt8(truncatingIfNeeded: i % 251) }
+        }
+        return data
     }
 }
 
