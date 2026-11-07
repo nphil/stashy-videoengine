@@ -72,13 +72,20 @@ concurrency):
 - `ByteRangeSources.make` reads a `file://` or `http(s)://` URL with URLSession
   range requests and feeds FFmpeg through a custom `AVIOContext`; FFmpeg never
   opens a network URL itself.
-- `RemuxSession` plays what AVPlayer cannot open (Matroska, for instance): audio
-  and video are copied, without re-encoding, into a growing fragmented MP4 that
-  `LoopbackServer` serves as HLS on 127.0.0.1.
+- `RemuxSession` plays what AVPlayer cannot open (Matroska, for instance): video
+  is copied, without re-encoding, into a growing fragmented MP4 that
+  `LoopbackServer` serves as HLS on 127.0.0.1. From v2.0.0, audio AVPlayer
+  cannot play is re-encoded to AAC and text subtitles become WebVTT renditions.
 - `FileTranscoder` re-encodes a local file in one VideoToolbox pass;
   `ChunkedTranscoder` works in chunks of about 20 s and resumes where an
   interrupted run stopped.
+- `HardwareDecodeProbe` and `HardwareCapabilities` (v2.0.0+) report hardware
+  decode support, HDR eligibility of the display, and heat and power state.
 - Logging goes through an `EngineLogger` the app supplies.
+
+The full API, adoption steps and device test sheets are in
+[docs/ENGINE.md](docs/ENGINE.md). A public API change is a major version, so
+apps pin an exact version.
 
 ## Consuming from the Stashy app
 
@@ -86,7 +93,7 @@ Add this repo as a Swift Package dependency (the `FFmpeg` product pulls in all
 six binary targets plus the required system frameworks):
 
 ```swift
-.package(url: "https://github.com/nphil/stashy-videoengine.git", from: "2.0.0")
+.package(url: "https://github.com/nphil/stashy-videoengine.git", exact: "2.0.0")
 ```
 
 ```swift

@@ -1,7 +1,8 @@
 # VideoEngine
 
-The Swift layer over the FFmpeg binaries, shared by Stashy and Marquee. Two
-library products, both Swift 6 with strict concurrency, iOS 16 and later:
+The Swift layer over the FFmpeg binaries, shared by Stashy and Marquee. One
+library product, `VideoEngine`, with two targets, both Swift 6 with strict
+concurrency, iOS 26 and later:
 
 - **`LoopbackHLS`**: the 127.0.0.1 HTTP server, fragment index, playlists and
   WebVTT tracks. No FFmpeg dependency.
