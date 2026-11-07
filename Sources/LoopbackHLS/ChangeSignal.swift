@@ -1,26 +1,36 @@
 import Foundation
 import os
 
-/// Wakes threads blocked on content that a producer is still writing. A waiter takes a ticket before it
-/// checks its condition, so a change that lands between the check and the wait still wakes it.
+/// Wakes requests that wait for content a producer is still writing. A waiter registers before it checks
+/// its condition, so a change that lands between the check and the registration still wakes it. Each
+/// registration runs at most once: at the next broadcast, or not at all once withdrawn.
 final class ChangeSignal: Sendable {
-    private let waiters = OSAllocatedUnfairLock<[DispatchSemaphore]>(uncheckedState: [])
-
-    func ticket() -> DispatchSemaphore {
-        let semaphore = DispatchSemaphore(value: 0)
-        waiters.withLockUnchecked { $0.append(semaphore) }
-        return semaphore
+    private struct State {
+        var nextID = 0
+        var waiters: [Int: @Sendable () -> Void] = [:]
     }
 
-    func withdraw(_ ticket: DispatchSemaphore) {
-        waiters.withLockUnchecked { list in list.removeAll { $0 === ticket } }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    /// Registers `wake` for the next broadcast and returns the id that withdraws it.
+    func register(_ wake: @escaping @Sendable () -> Void) -> Int {
+        state.withLock { state in
+            state.nextID += 1
+            state.waiters[state.nextID] = wake
+            return state.nextID
+        }
+    }
+
+    /// Removes a registration. False when a broadcast already took it, so its wake runs instead.
+    func withdraw(_ id: Int) -> Bool {
+        state.withLock { $0.waiters.removeValue(forKey: id) != nil }
     }
 
     func broadcast() {
-        let woken = waiters.withLockUnchecked { list -> [DispatchSemaphore] in
-            defer { list.removeAll() }
-            return list
+        let woken = state.withLock { state -> [@Sendable () -> Void] in
+            defer { state.waiters.removeAll() }
+            return Array(state.waiters.values)
         }
-        for semaphore in woken { semaphore.signal() }
+        for wake in woken { wake() }
     }
 }

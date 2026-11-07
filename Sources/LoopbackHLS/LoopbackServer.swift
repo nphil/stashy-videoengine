@@ -62,7 +62,9 @@ public final class LoopbackServer: Sendable {
             }
         }
         state.withLockUnchecked { $0.listener = listener }
-        listener.start(queue: queue)
+        // The caller blocks for the ready state, possibly on the main thread. A signal from a lower-QoS queue
+        // would make that wait a priority inversion.
+        listener.start(queue: DispatchQueue(label: queue.label + ".listener", qos: .userInteractive))
         guard ready.wait(timeout: .now() + 5) == .success else {
             stop()
             throw LoopbackError.timedOut
@@ -153,54 +155,58 @@ public final class LoopbackServer: Sendable {
         let range: String?
     }
 
-    private func servePlaylist(_ request: Request, produce: () -> String?) {
-        guard let text = wait(for: produce) else {
-            reply(request, status: 503, note: "not ready")
-            return
+    private func servePlaylist(_ request: Request, produce: @escaping @Sendable () -> String?) {
+        whenReady(produce) { text in
+            guard let text else {
+                self.reply(request, status: 503, note: "not ready")
+                return
+            }
+            self.reply(request, status: 200, headers: [("Content-Type", "application/vnd.apple.mpegurl"),
+                                                       ("Cache-Control", "no-cache")],
+                       body: Data(text.utf8))
         }
-        reply(request, status: 200, headers: [("Content-Type", "application/vnd.apple.mpegurl"),
-                                              ("Cache-Control", "no-cache")],
-              body: Data(text.utf8))
     }
 
-    private func serveGrowingFile(_ request: Request, url: URL, availableBytes: () -> Int64,
-                                  isComplete: () -> Bool, contentType: String) {
-        var wanted = ByteRangeRequest.bounded(start: 0, end: nil)
+    private func serveGrowingFile(_ request: Request, url: URL, availableBytes: @escaping @Sendable () -> Int64,
+                                  isComplete: @escaping @Sendable () -> Bool, contentType: String) {
+        var parsed = ByteRangeRequest.bounded(start: 0, end: nil)
         if let value = request.range {
-            guard let parsed = ByteRangeRequest(header: value) else {
+            guard let range = ByteRangeRequest(header: value) else {
                 reply(request, status: 416, note: "bad range")
                 return
             }
-            wanted = parsed
+            parsed = range
         }
-        // The playlist lists only written ranges, so this normally returns at once; it guards the race
-        // at the growing edge.
-        _ = wait { () -> Bool? in
+        let wanted = parsed
+        // The playlist lists only written ranges, so this normally answers at once; it covers the race at
+        // the growing edge.
+        whenReady({ () -> Bool? in
             if isComplete() { return true }
             switch wanted {
             case .bounded(let start, let end): return availableBytes() > (end ?? start) ? true : nil
             case .suffix: return nil
             }
+        }) { _ in
+            // Completion first: a producer records its final size before it reports completion.
+            let complete = isComplete()
+            let available = availableBytes()
+            guard let range = wanted.resolve(available: available, complete: complete) else {
+                self.reply(request, status: 416,
+                           headers: complete ? [("Content-Range", "bytes */\(available)")] : [],
+                           note: "available \(available)")
+                return
+            }
+            guard let data = Self.read(url, range), !data.isEmpty else {
+                self.reply(request, status: 500, note: "read \(range.lowerBound)-\(range.upperBound)")
+                return
+            }
+            let total = complete ? "\(available)" : "*"
+            let last = range.lowerBound + Int64(data.count) - 1
+            self.reply(request, status: 206,
+                       headers: [("Content-Type", contentType), ("Accept-Ranges", "bytes"),
+                                 ("Content-Range", "bytes \(range.lowerBound)-\(last)/\(total)")],
+                       body: data)
         }
-        // Completion first: a producer records its final size before it reports completion.
-        let complete = isComplete()
-        let available = availableBytes()
-        guard let range = wanted.resolve(available: available, complete: complete) else {
-            reply(request, status: 416,
-                  headers: complete ? [("Content-Range", "bytes */\(available)")] : [],
-                  note: "available \(available)")
-            return
-        }
-        guard let data = Self.read(url, range), !data.isEmpty else {
-            reply(request, status: 500, note: "read \(range.lowerBound)-\(range.upperBound)")
-            return
-        }
-        let total = complete ? "\(available)" : "*"
-        let last = range.lowerBound + Int64(data.count) - 1
-        reply(request, status: 206,
-              headers: [("Content-Type", contentType), ("Accept-Ranges", "bytes"),
-                        ("Content-Range", "bytes \(range.lowerBound)-\(last)/\(total)")],
-              body: data)
     }
 
     private func serveData(_ request: Request, body: Data, contentType: String) {
@@ -222,17 +228,29 @@ public final class LoopbackServer: Sendable {
 
     // MARK: - Helpers
 
-    /// Re-evaluates `probe` each time a producer reports new content, and at least every 100 ms, until it
-    /// returns a value, the server stops or `waitTimeout` passes.
-    private func wait<T>(for probe: () -> T?) -> T? {
-        if let value = probe() { return value }
-        let deadline = DispatchTime.now() + waitTimeout
-        while true {
-            let ticket = changes.ticket()
-            defer { changes.withdraw(ticket) }
-            if let value = probe() { return value }
-            if state.withLockUnchecked({ $0.isStopped }) || DispatchTime.now() >= deadline { return nil }
-            _ = ticket.wait(timeout: min(deadline, .now() + .milliseconds(100)))
+    /// Calls `done` with the probe's value once it has one, re-checking each time a producer reports new
+    /// content and at least every 100 ms; with nil once the server stops or `waitTimeout` passes. No thread
+    /// blocks meanwhile: a server thread blocked on a lower-QoS producer is a priority inversion, which
+    /// Xcode's Thread Performance Checker reports by stalling the process for seconds.
+    private func whenReady<T: Sendable>(
+        _ probe: @escaping @Sendable () -> T?, deadline: DispatchTime? = nil, _ done: @escaping @Sendable (T?) -> Void
+    ) {
+        let deadline = deadline ?? DispatchTime.now() + waitTimeout
+        let recheck: @Sendable () -> Void = { [queue] in
+            queue.async { self.whenReady(probe, deadline: deadline, done) }
+        }
+        let id = changes.register(recheck)
+        if let value = probe() {
+            // When a broadcast already took the registration, its re-check answers instead.
+            if changes.withdraw(id) { done(value) }
+            return
+        }
+        if state.withLockUnchecked({ $0.isStopped }) || DispatchTime.now() >= deadline {
+            if changes.withdraw(id) { done(nil) }
+            return
+        }
+        queue.asyncAfter(deadline: min(deadline, .now() + .milliseconds(100))) { [changes] in
+            if changes.withdraw(id) { recheck() }
         }
     }
 
