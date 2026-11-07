@@ -89,8 +89,9 @@ build_fribidi() {
   ./configure --prefix="$PREFIX" --host="$HOST" --enable-static --disable-shared \
     --with-pic --disable-fast-install --disable-debug --disable-deprecated \
     CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
-  # doc/ needs c2man (absent on the runner); drop it from SUBDIRS.
-  sed -i.bak 's/ doc / /' Makefile
+  # Only the library is needed: doc/ wants c2man, and since 1.0.18 bin/ copies
+  # its shipped man page onto itself when cross-compiling in-tree, which fails.
+  sed -i.bak 's/^SUBDIRS = .*/SUBDIRS = gen.tab lib/' Makefile
   make -j"$NJOBS"
   make install
 }
