@@ -25,7 +25,7 @@ OUT="$BUILD_DIR/xcframeworks"
 THIN="$BUILD_DIR/thin"
 TESTDIR="$ROOT/test"
 WORK="$BUILD_DIR/verify"
-MIN_IOS_VERSION="${MIN_IOS_VERSION:-16.0}"
+MIN_IOS_VERSION="${MIN_IOS_VERSION:-26.0}"
 SIM_TRIPLE="arm64-apple-ios${MIN_IOS_VERSION}-simulator"
 
 LIBS=(libavutil libavcodec libavformat libavfilter libswscale libswresample)
@@ -76,7 +76,7 @@ case "$codec_syms" in
 esac
 
 # The VideoToolbox hardware scale/rotate filters need iOS-16 APIs; confirm the
-# min-iOS-16 build actually compiled them into the device slice's libavfilter.
+# build actually compiled them into the device slice's libavfilter.
 log "Checking compiled-in VideoToolbox filters (nm, device slice)"
 filt="$THIN/iphoneos/lib/libavfilter.a"
 filt_syms="$(xcrun nm "$filt" 2>/dev/null || true)"
@@ -85,7 +85,7 @@ for sym in ff_vf_scale_vt ff_vf_transpose_vt ff_vf_yadif_videotoolbox; do
     *"$sym"*) pass "$sym present" ;;
     *) echo "  *_vt / _videotoolbox filter symbols present in libavfilter.a:"
        printf '%s\n' "$filt_syms" | grep -iE '_vt|videotoolbox' | head -20 || true
-       fail "filter symbol $sym not found in libavfilter.a (min iOS 16 should enable scale_vt/transpose_vt)" ;;
+       fail "filter symbol $sym not found in libavfilter.a (scale_vt/transpose_vt need min iOS 16 or later)" ;;
   esac
 done
 
@@ -129,7 +129,7 @@ xcrun --sdk iphonesimulator clang -target "$SIM_TRIPLE" \
   -lavformat -lavfilter -lavcodec -lswscale -lswresample -lavutil \
   -lz -lbz2 -liconv -lc++ \
   -framework VideoToolbox -framework CoreMedia -framework CoreVideo \
-  -framework CoreFoundation -framework Security -framework AudioToolbox \
+  -framework CoreFoundation -framework AudioToolbox \
   -framework Metal \
   -o "$WORK/smoke" \
   && pass "smoke test linked" \

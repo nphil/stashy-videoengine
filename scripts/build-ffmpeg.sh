@@ -11,14 +11,14 @@
 # Designed to run on the GitHub Actions `xcode-27` runner (Xcode 27.1).
 #
 # Tunables (env):
-#   FFMPEG_VERSION   FFmpeg git tag to build      (default n8.1.3)
-#   MIN_IOS_VERSION  Minimum deployment target    (default 16.0)
+#   FFMPEG_VERSION   FFmpeg git tag to build      (default n9.0.2)
+#   MIN_IOS_VERSION  Minimum deployment target    (default 26.0)
 #   USE_CCACHE       Set to 1 to wrap clang in ccache (CI sets this)
 # ===========================================================================
 set -euo pipefail
 
-FFMPEG_VERSION="${FFMPEG_VERSION:-n8.1.3}"
-MIN_IOS_VERSION="${MIN_IOS_VERSION:-16.0}"
+FFMPEG_VERSION="${FFMPEG_VERSION:-n9.0.2}"
+MIN_IOS_VERSION="${MIN_IOS_VERSION:-26.0}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="$ROOT/ffmpeg"            # FFmpeg source checkout
@@ -48,6 +48,13 @@ LIBS=(libavutil libavcodec libavformat libavfilter libswscale libswresample)
 # FFmpeg's registries reference every enabled component, so an app that links a
 # library carries all of its components (Stashy's IPA grew about 4.4 MB with
 # the switch to this set). Only libraries an app never references drop out.
+#
+# Input is only ever a file, a pipe or the app's own AVIOContext (URLSession
+# range requests in Stashy), so the protocols stop at file and pipe, and with
+# them the HTTP client and TLS. --disable-protocols only unsets protocols and
+# the rtsp/rtp/sap/sdp components would select http/tcp/udp back in, hence
+# --disable-network. SecureTransport is autodetected, so it is disabled
+# explicitly.
 
 log() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 
@@ -121,7 +128,8 @@ build_one() {
       --disable-avdevice \
       --disable-lzma \
       --enable-videotoolbox \
-      --enable-securetransport \
+      --disable-network --disable-securetransport \
+      --disable-protocols --enable-protocol=file,pipe \
       --enable-libfribidi --enable-libfreetype --enable-libharfbuzz \
       --enable-libzimg --enable-libass \
       --enable-libdav1d \

@@ -28,7 +28,7 @@ set -euo pipefail
 SDK="${1:?usage: build-deps.sh <sdk> <prefix> <srcroot> [min_ios]}"
 PREFIX="${2:?missing prefix}"
 SRCROOT="${3:?missing srcroot}"
-MIN_IOS_VERSION="${4:-16.0}"
+MIN_IOS_VERSION="${4:-26.0}"
 
 FRIBIDI_VERSION=1.0.18
 FREETYPE_VERSION=2.13.3

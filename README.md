@@ -22,7 +22,7 @@ Six static-library XCFrameworks, each with an **arm64 iOS-device** slice and an
 | `libswscale.xcframework`    | `Libswscale`    |
 | `libswresample.xcframework` | `Libswresample` |
 
-**FFmpeg version:** `n8.1.3` · **Min iOS:** 16.0 · **License:** LGPL-2.1+
+**FFmpeg version:** `n9.0.2` · **Min iOS:** 26.0 · **License:** LGPL-2.1+
 
 ### Enabled capabilities (comprehensive LGPL build, v1.1.0+)
 
@@ -48,18 +48,18 @@ libpostproc).
   bwdif, crop, pad, transpose, fps, setpts, overlay, hstack/vstack, aresample,
   volume, loudnorm, dynaudnorm, atempo, …) **+ external:** `zscale` (libzimg, HQ
   scale/colorspace/HDR), `drawtext` (libfreetype/harfbuzz/fribidi),
-  `subtitles`/`ass` (libass burn-in). Hardware: `yadif_videotoolbox` (Metal) and
-  — now that min-iOS is 16 — `scale_vt`/`transpose_vt` (VideoToolbox HW
-  scale/rotate on pixel buffers).
+  `subtitles`/`ass` (libass burn-in). Hardware: `yadif_videotoolbox` (Metal),
+  `scale_vt`/`transpose_vt` (VideoToolbox HW scale/rotate on pixel buffers).
   > `tonemap_vt` does not exist in FFmpeg; software `tonemap` + `zscale` cover
   > HDR→SDR. The GPL `cropdetect`/`eq`/`hqdn3d` filters are excluded (LGPL build).
 - **Demux/Mux:** all non-GPL (matroska/webm, mov/mp4, avi, flv, mpegts, asf,
   ogg, hls, wav, …); muxers include mov/mp4/mpegts plus **hls** and **segment**.
   Fragmented MP4 at runtime via `movflags=frag_keyframe+empty_moov+default_base_moof`.
 - **Bitstream filters:** all non-GPL (h264/hevc_mp4toannexb, aac_adtstoasc,
-  extract_extradata, vp9_superframe, av1_metadata, …).
-- **Protocols:** file, pipe, **http, https, tls** (SecureTransport). The app may
-  still feed remote input via a custom `AVIOContext`; networking is a fallback.
+  extract_extradata, vp9_superframe, av1_metadata, dovi_rpu, dovi_split, …).
+- **Protocols:** file and pipe only. Remote input goes through the app's own
+  `AVIOContext` (Stashy uses URLSession range requests); FFmpeg's HTTP client
+  and TLS are not built.
 
 ### VideoEngine library (v1.4.0+)
 
@@ -86,7 +86,7 @@ Add this repo as a Swift Package dependency (the `FFmpeg` product pulls in all
 six binary targets plus the required system frameworks):
 
 ```swift
-.package(url: "https://github.com/nphil/stashy-videoengine.git", from: "1.0.0")
+.package(url: "https://github.com/nphil/stashy-videoengine.git", from: "2.0.0")
 ```
 
 ```swift
@@ -110,7 +110,7 @@ don't have to add them yourself:
 - System libraries: `z`, `bz2`, `iconv`, `c++` (libc++, for the C++ external
   libs libzimg/harfbuzz; lzma is disabled — it isn't in the iOS SDK)
 - Frameworks: `VideoToolbox`, `CoreMedia`, `CoreVideo`, `CoreFoundation`,
-  `Security` (SecureTransport), `AudioToolbox`, `Metal` (VideoToolbox filters)
+  `AudioToolbox`, `Metal` (VideoToolbox filters)
 
 The external filter libraries (libzimg/libfreetype/libharfbuzz/libfribidi/
 libass) are merged into `libavfilter.xcframework`, so there are still exactly
@@ -197,7 +197,7 @@ The build scripts, configuration and Swift sources in this repo are MIT (see
 
 | Component | Version | Licence |
 |---|---|---|
-| [FFmpeg](https://ffmpeg.org) | n8.1.3 | LGPL-2.1-or-later |
+| [FFmpeg](https://ffmpeg.org) | n9.0.2 | LGPL-2.1-or-later |
 | [dav1d](https://code.videolan.org/videolan/dav1d) | 1.5.4 | BSD-2-Clause |
 | [FreeType](https://freetype.org) | 2.13.3 | FreeType License |
 | [FriBiDi](https://github.com/fribidi/fribidi) | 1.0.18 | LGPL-2.1-or-later |

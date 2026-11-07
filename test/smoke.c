@@ -55,14 +55,24 @@ static void need_bsf(const char *n) {
     printf("  bsf     %-22s : %s\n", n, ok ? "FOUND" : "MISSING");
     if (!ok) fails++;
 }
-static void need_protocol(const char *n) {
-    void *opaque = NULL;
-    const char *p;
-    int ok = 0;
-    while ((p = avio_enum_protocols(&opaque, 0)))
-        if (!strcmp(p, n)) ok = 1;
-    printf("  proto   %-22s : %s\n", n, ok ? "FOUND" : "MISSING");
-    if (!ok) fails++;
+// Input reaches FFmpeg only as a file, a pipe or the app's own AVIOContext;
+// any other protocol means the network stack is back.
+static void need_only_file_and_pipe(void) {
+    for (int output = 0; output <= 1; output++) {
+        void *opaque = NULL;
+        const char *p;
+        int seen = 0;
+        while ((p = avio_enum_protocols(&opaque, output))) {
+            int ok = !strcmp(p, "file") || !strcmp(p, "pipe");
+            printf("  proto   %-22s : %s\n", p, ok ? "FOUND" : "UNEXPECTED");
+            if (ok) seen++;
+            else fails++;
+        }
+        if (seen != 2) {
+            printf("  proto   %-22s : MISSING\n", output ? "file/pipe output" : "file/pipe input");
+            fails++;
+        }
+    }
 }
 // Registration only: a VideoToolbox hw_config on the decoder.
 static void need_vt_hwaccel(const char *n) {
@@ -170,18 +180,17 @@ int main(void) {
     need_muxer("hls");
     need_muxer("segment");
 
-    // Bitstream filters: lossless audio cores, Dolby Vision RPU, PGS.
+    // Bitstream filters: lossless audio cores, Dolby Vision RPU and layer
+    // split, PGS.
     need_bsf("dca_core");
     need_bsf("truehd_core");
     need_bsf("eac3_core");
     need_bsf("dovi_rpu");
+    need_bsf("dovi_split");
     need_bsf("filter_units");
     need_bsf("pgs_frame_merge");
 
-    // https/tls fail quietly when the SecureTransport probe fails.
-    need_protocol("file");
-    need_protocol("https");
-    need_protocol("tls");
+    need_only_file_and_pipe();
 
     if (fails) {
         printf("RESULT: FAIL (%d required component(s) missing)\n", fails);
