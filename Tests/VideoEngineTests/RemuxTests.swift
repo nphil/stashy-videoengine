@@ -57,4 +57,32 @@ struct RemuxSessionTests {
         #expect(playlist.components(separatedBy: "#EXTINF:").count - 1 == 3)
         #expect(playlist.contains("#EXT-X-ENDLIST"))
     }
+
+    @Test func remuxesHDR10AsHvc1WithAPQRange() async throws {
+        let fixture = try Fixture.url("hevc10-opus-srt.mkv")
+        let session = RemuxSession(sourceFactory: { try FileRangeSource(fileURL: fixture) })
+        defer { session.stop() }
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(10))
+            session.stop()
+        }
+        defer { watchdog.cancel() }
+        let playlistURL = try session.start()
+        var sampleEntry: String?
+        events: for await event in session.events {
+            switch event {
+            case .headerWritten(_, let entry): sampleEntry = entry
+            case .finished, .stopped: break events
+            case .failed(let error, _):
+                Issue.record("remux failed: \(error)")
+                break events
+            default: continue
+            }
+        }
+        #expect(sampleEntry == "hvc1")
+        let (master, _) = try await URLSession.shared.data(from: playlistURL)
+        let variant = String(decoding: master, as: UTF8.self)
+        #expect(variant.contains("CODECS=\"hvc1.2."))
+        #expect(variant.contains("VIDEO-RANGE=PQ"))
+    }
 }

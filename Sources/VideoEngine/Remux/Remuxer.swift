@@ -187,6 +187,11 @@ struct Remuxer: Sendable {
         emit(.opened(info))
 
         let videoIndex = Self.videoStream(of: input.context)
+        let plan = Self.plan(for: input.context, videoIndex: videoIndex, options: options)
+        logger.event("remux-plan", [
+            ("tag", plan.videoTag ?? "auto"), ("dolby-vision", "\(plan.dolbyVision)"),
+            ("movflags", plan.movflags.joined(separator: "+")),
+        ])
         if run.startTime > 0, videoIndex >= 0 { try seek(input, videoIndex: videoIndex) }
 
         let index = FragmentIndex(
@@ -203,9 +208,20 @@ struct Remuxer: Sendable {
             contentChanged()
         }
         defer { output.close() }
-        let mapping = try mapStreams(from: input.context, to: output.context, videoIndex: videoIndex)
-        try writeHeader(output, sealer: sealer, input: input.context, info: info, videoIndex: videoIndex)
-        try copyPackets(from: input, to: output, mapping: mapping, videoIndex: videoIndex, sealer: sealer)
+        let (mapping, filter) = try mapStreams(from: input.context, to: output.context, videoIndex: videoIndex, plan: plan)
+        var announced = false
+        // With delay_moov the init segment arrives with the first fragment rather than the header.
+        func announceWhenReady() {
+            guard !announced, sealer.hasInitSegment else { return }
+            announced = true
+            announce(sealer: sealer, input: input.context, info: info, videoIndex: videoIndex)
+        }
+        try writeHeader(output, plan: plan)
+        announceWhenReady()
+        try copyPackets(
+            from: input, to: output, mapping: mapping, videoIndex: videoIndex, filter: filter, sealer: sealer,
+            afterWrite: announceWhenReady
+        )
         run.markComplete()
         index.finish()
     }
@@ -229,16 +245,53 @@ struct Remuxer: Sendable {
         }
     }
 
-    /// The first video stream that is not cover art, or -1.
+    /// The first video stream that is not cover art or a Dolby Vision enhancement layer on its own, or -1.
     private static func videoStream(of format: UnsafeMutablePointer<AVFormatContext>) -> Int {
         for i in 0..<Int(format.pointee.nb_streams) {
             guard let stream = format.pointee.streams[i], let parameters = stream.pointee.codecpar else { continue }
             if parameters.pointee.codec_type == AVMEDIA_TYPE_VIDEO,
-               stream.pointee.disposition & FF.dispositionAttachedPicture == 0 {
+               stream.pointee.disposition & FF.dispositionAttachedPicture == 0,
+               dolbyVisionRecord(of: parameters)?.hasBaseLayer != false {
                 return i
             }
         }
         return -1
+    }
+
+    /// The mux plan for the chosen video stream and every audio stream the run copies.
+    private static func plan(
+        for format: UnsafeMutablePointer<AVFormatContext>, videoIndex: Int, options: RemuxOptions
+    ) -> MuxPlan {
+        var videoCodec: String?
+        var record: DolbyVisionConfiguration?
+        var audioCodecs: [String] = []
+        for i in 0..<Int(format.pointee.nb_streams) {
+            guard let parameters = format.pointee.streams[i]?.pointee.codecpar else { continue }
+            let codec = String(cString: avcodec_get_name(parameters.pointee.codec_id))
+            if i == videoIndex {
+                videoCodec = codec
+                record = dolbyVisionRecord(of: parameters)
+            } else if parameters.pointee.codec_type == AVMEDIA_TYPE_AUDIO {
+                audioCodecs.append(codec)
+            }
+        }
+        return MuxPlan.decide(videoCodec: videoCodec, dolbyVision: record, audioCodecs: audioCodecs, options: options)
+    }
+
+    /// The stream's Dolby Vision configuration record, from Matroska's block addition mapping or an MP4
+    /// `dvcC`/`dvvC` box.
+    private static func dolbyVisionRecord(of parameters: UnsafeMutablePointer<AVCodecParameters>) -> DolbyVisionConfiguration? {
+        guard let side = av_packet_side_data_get(
+            parameters.pointee.coded_side_data, parameters.pointee.nb_coded_side_data, AV_PKT_DATA_DOVI_CONF
+        ), side.pointee.size >= MemoryLayout<AVDOVIDecoderConfigurationRecord>.size, let data = side.pointee.data else {
+            return nil
+        }
+        let record = UnsafeRawPointer(data).load(as: AVDOVIDecoderConfigurationRecord.self)
+        return DolbyVisionConfiguration(
+            profile: Int(record.dv_profile), level: Int(record.dv_level),
+            compatibilityID: Int(record.dv_bl_signal_compatibility_id), hasRPU: record.rpu_present_flag != 0,
+            hasEnhancementLayer: record.el_present_flag != 0, hasBaseLayer: record.bl_present_flag != 0
+        )
     }
 
     /// Whole seconds no segment exceeds, fixed for the run: the longest keyframe interval in the
@@ -259,39 +312,76 @@ struct Remuxer: Sendable {
 
     /// Adds an output stream for the chosen video stream and for each audio stream. The muxer starts a
     /// fragment at a keyframe of any video track, so a second video stream would cut segments short;
-    /// cover art and other stream types are left out too. Returns the input-to-output index table.
+    /// cover art and other stream types are left out too. Returns the input-to-output index table and the
+    /// filter the video packets pass through, if the plan needs one.
     private func mapStreams(
         from input: UnsafeMutablePointer<AVFormatContext>, to output: UnsafeMutablePointer<AVFormatContext>,
-        videoIndex: Int
-    ) throws -> [Int] {
+        videoIndex: Int, plan: MuxPlan
+    ) throws -> (mapping: [Int], filter: FFBitstreamFilter?) {
         var mapping = [Int](repeating: -1, count: Int(input.pointee.nb_streams))
+        var filter: FFBitstreamFilter?
         for i in mapping.indices {
             guard let stream = input.pointee.streams[i], let parameters = stream.pointee.codecpar else { continue }
             guard i == videoIndex || parameters.pointee.codec_type == AVMEDIA_TYPE_AUDIO else { continue }
             guard let outStream = avformat_new_stream(output, nil) else { throw VideoEngineError.outOfMemory }
-            let copied = avcodec_parameters_copy(outStream.pointee.codecpar, parameters)
+            var source = UnsafePointer(parameters)
+            if i == videoIndex, plan.dolbyVision == .strip {
+                let strip = try FFBitstreamFilter(
+                    name: "dovi_rpu", parameters: parameters, timeBase: stream.pointee.time_base, options: ["strip": 1]
+                )
+                source = UnsafePointer(strip.pointer.pointee.par_out)
+                filter = strip
+            }
+            let copied = avcodec_parameters_copy(outStream.pointee.codecpar, source)
             guard copied >= 0 else { throw VideoEngineError.failure("copy stream parameters", copied) }
             // The source container's tag rarely suits MP4 ("tag not found" for HEVC from Matroska), so the
-            // muxer picks one unless the options force an HEVC sample entry.
-            let forced = parameters.pointee.codec_id == AV_CODEC_ID_HEVC ? options.hevcTag.fourCC : nil
-            outStream.pointee.codecpar.pointee.codec_tag = forced.map(FF.tag) ?? 0
+            // muxer picks one unless the plan names the sample entry.
+            let parametersOut: UnsafeMutablePointer<AVCodecParameters> = outStream.pointee.codecpar
+            parametersOut.pointee.codec_tag = i == videoIndex ? plan.videoTag.map(FF.tag) ?? 0 : 0
+            if i == videoIndex { try Self.apply(plan, to: parametersOut) }
             mapping[i] = Int(outStream.pointee.index)
         }
         guard mapping.contains(where: { $0 >= 0 }) else { throw VideoEngineError.noPlayableStreams }
-        return mapping
+        return (mapping, filter)
     }
 
-    private func writeHeader(
-        _ output: MuxOutput, sealer: FragmentSealer, input: UnsafeMutablePointer<AVFormatContext>, info: MediaInfo,
-        videoIndex: Int
-    ) throws {
+    /// Writes the plan's Dolby Vision record and colour fields into the output video parameters.
+    private static func apply(_ plan: MuxPlan, to parameters: UnsafeMutablePointer<AVCodecParameters>) throws {
+        var sides = parameters.pointee.coded_side_data
+        var count = parameters.pointee.nb_coded_side_data
+        switch plan.dolbyVision {
+        case .add(let record):
+            guard let side = av_packet_side_data_new(
+                &sides, &count, AV_PKT_DATA_DOVI_CONF, MemoryLayout<AVDOVIDecoderConfigurationRecord>.size, 0
+            ) else { throw VideoEngineError.outOfMemory }
+            var value = AVDOVIDecoderConfigurationRecord()
+            value.dv_version_major = 1
+            value.dv_profile = UInt8(record.profile)
+            value.dv_level = UInt8(record.level)
+            value.rpu_present_flag = record.hasRPU ? 1 : 0
+            value.el_present_flag = record.hasEnhancementLayer ? 1 : 0
+            value.bl_present_flag = record.hasBaseLayer ? 1 : 0
+            value.dv_bl_signal_compatibility_id = UInt8(record.compatibilityID)
+            UnsafeMutableRawPointer(side.pointee.data!).storeBytes(of: value, as: AVDOVIDecoderConfigurationRecord.self)
+        case .drop:
+            av_packet_side_data_remove(sides, &count, AV_PKT_DATA_DOVI_CONF)
+        case .none, .keep, .strip:
+            break
+        }
+        parameters.pointee.coded_side_data = sides
+        parameters.pointee.nb_coded_side_data = count
+        if plan.unspecifiedColour {
+            parameters.pointee.color_primaries = AVCOL_PRI_UNSPECIFIED
+            parameters.pointee.color_trc = AVCOL_TRC_UNSPECIFIED
+            parameters.pointee.color_space = AVCOL_SPC_UNSPECIFIED
+        }
+    }
+
+    private func writeHeader(_ output: MuxOutput, plan: MuxPlan) throws {
         var dictionary: OpaquePointer?
         defer { av_dict_free(&dictionary) }
-        // frag_keyframe starts every fragment on a video keyframe, so each one is a decodable HLS segment;
-        // empty_moov puts the parameter sets in the init segment that EXT-X-MAP points at.
-        let movflags = (["frag_keyframe", "empty_moov", "default_base_moof"] + options.extraMovflags).joined(separator: "+")
-        av_dict_set(&dictionary, "movflags", movflags, 0)
-        for (key, value) in options.muxerOptions { av_dict_set(&dictionary, key, value, 0) }
+        av_dict_set(&dictionary, "movflags", plan.movflags.joined(separator: "+"), 0)
+        for (key, value) in plan.muxerOptions { av_dict_set(&dictionary, key, value, 0) }
         let result = avformat_write_header(output.context, &dictionary)
         guard result >= 0 else {
             logger.event("remux-header-fail", [("error", FF.errorString(result))])
@@ -300,6 +390,12 @@ struct Remuxer: Sendable {
         // The multivariant playlist is built from the init segment, so it goes to the file now rather than
         // with the first fragment.
         avio_flush(output.context.pointee.pb)
+    }
+
+    /// Publishes the multivariant entry once the init segment is complete.
+    private func announce(
+        sealer: FragmentSealer, input: UnsafeMutablePointer<AVFormatContext>, info: MediaInfo, videoIndex: Int
+    ) {
         let initSegment = InitSegment(data: sealer.initSegment)
         let variant = Self.variant(of: initSegment, input: input, videoIndex: videoIndex, info: info)
         run.headerWritten(variant)
@@ -336,10 +432,12 @@ struct Remuxer: Sendable {
     /// Copies packets until the end of the input, then writes the trailer. The output's timeline starts
     /// at the earliest first timestamp of the copied streams, published as the run's origin.
     private func copyPackets(
-        from input: DemuxInput, to output: MuxOutput, mapping: [Int], videoIndex: Int, sealer: FragmentSealer
+        from input: DemuxInput, to output: MuxOutput, mapping: [Int], videoIndex: Int, filter: FFBitstreamFilter?,
+        sealer: FragmentSealer, afterWrite: () -> Void
     ) throws {
         let reading = try FFPacket()
-        defer { withExtendedLifetime(reading) {} }
+        let filtered = try FFPacket()
+        defer { withExtendedLifetime((reading, filtered)) {} }
         let packet = reading.pointer
         let streams = input.context.pointee.streams!
         let outStreams = output.context.pointee.streams!
@@ -383,6 +481,7 @@ struct Remuxer: Sendable {
             packets += 1
             run.recordPacket(mediaSeconds: videoSeconds, packets: packets)
             noteFirstSegment()
+            afterWrite()
             let now = DispatchTime.now()
             if now.uptimeNanoseconds - lastProgress.uptimeNanoseconds >= 500_000_000 {
                 lastProgress = now
@@ -417,6 +516,21 @@ struct Remuxer: Sendable {
             for owner in released { try write(owner.pointer, shifts: fixed) }
         }
 
+        func deliver(_ packet: UnsafeMutablePointer<AVPacket>) throws {
+            if let shifts {
+                try write(packet, shifts: shifts)
+                return
+            }
+            // The first packets wait until every stream has shown its first timestamp, so the output can
+            // start at the earliest of them. Shifting by an earlier stream's first packet alone would put
+            // another stream's first keyframe below zero, where it is dropped.
+            let owner = try FFPacket()
+            av_packet_move_ref(owner.pointer, packet)
+            if Self.timestamp(of: owner.pointer) != nil { heldStreams.insert(Int(owner.pointer.pointee.stream_index)) }
+            held.append(owner)
+            if heldStreams == copied || held.count >= Self.heldPacketLimit { try release() }
+        }
+
         run.control.extendDeadline(by: options.stallTimeout)
         while true {
             try pace(videoSeconds: videoSeconds)
@@ -434,23 +548,22 @@ struct Remuxer: Sendable {
                 av_packet_unref(packet)
                 continue
             }
-            if let shifts {
-                try write(packet, shifts: shifts)
-                continue
+            if inIndex == videoIndex, let filter {
+                try filter.send(packet)
+                while try filter.receive(into: filtered.pointer) { try deliver(filtered.pointer) }
+            } else {
+                try deliver(packet)
             }
-            // The first packets wait until every stream has shown its first timestamp, so the output can
-            // start at the earliest of them. Shifting by an earlier stream's first packet alone would put
-            // another stream's first keyframe below zero, where it is dropped.
-            let owner = try FFPacket()
-            av_packet_move_ref(owner.pointer, packet)
-            if Self.timestamp(of: owner.pointer) != nil { heldStreams.insert(inIndex) }
-            held.append(owner)
-            if heldStreams == copied || held.count >= Self.heldPacketLimit { try release() }
+        }
+        if let filter {
+            try filter.send(nil)
+            while try filter.receive(into: filtered.pointer) { try deliver(filtered.pointer) }
         }
         if shifts == nil, !held.isEmpty { try release() }
         let trailer = av_write_trailer(output.context)
         guard trailer >= 0 else { throw VideoEngineError.writeFailed(code: trailer) }
         noteFirstSegment()
+        afterWrite()
     }
 
     private static func timestamp(of packet: UnsafeMutablePointer<AVPacket>) -> Int64? {

@@ -25,6 +25,8 @@ public final class FragmentSealer {
     /// The bytes before the first fragment (`ftyp` + `moov`), complete once `moov` is.
     public private(set) var initSegment = Data()
     public private(set) var sealedSegments = 0
+    /// True once `moov` has closed: right after the header, or with the first fragment under `delay_moov`.
+    public var hasInitSegment: Bool { initLength != nil }
 
     private var offset: Int64 = 0
     private var header = Data()

@@ -1,4 +1,5 @@
 import Foundation
+import LoopbackHLS
 
 /// The sample entry an HEVC stream gets in the MP4 output.
 public struct HEVCTag: Sendable, Equatable {
@@ -17,10 +18,16 @@ public struct HEVCTag: Sendable, Equatable {
 }
 
 public struct RemuxOptions: Sendable {
-    public var hevcTag: HEVCTag = .muxerDefault
-    /// Extra MP4 muxer options, such as `["strict": "unofficial"]`.
+    /// Sample entry for HEVC that is not Dolby Vision profile 5, which is always `dvh1`.
+    public var hevcTag: HEVCTag = .hvc1
+    public var dolbyVision: DolbyVisionMode = .automatic
+    /// The Dolby Vision record to write when the source carries none, such as one built from the media
+    /// server's profile, level and layer fields.
+    public var dolbyVisionFallback: DolbyVisionConfiguration?
+    /// MP4 muxer options; they override the run's own (`strict`, `use_editlist`).
     public var muxerOptions: [String: String] = [:]
-    /// Added to `frag_keyframe+empty_moov+default_base_moof`.
+    /// Added to the run's movflags: `frag_keyframe+empty_moov+default_base_moof`, with `delay_moov` when
+    /// AC-3 or E-AC-3 is copied and `write_colr` for Dolby Vision profile 5.
     public var extraMovflags: [String] = []
     public var ioBufferBytes = 256 << 10
     /// How far production may run ahead of the playhead before it waits.
