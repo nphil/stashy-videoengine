@@ -131,24 +131,25 @@ final class DemuxInput {
 /// What the output callback reaches through `opaque`. Confined to the worker thread.
 private final class OutputContext {
     let descriptor: Int32
-    let didWrite: (Int64) -> Void
+    let didWrite: (UnsafeRawBufferPointer, Int64) -> Void
     var written: Int64 = 0
 
-    init(descriptor: Int32, didWrite: @escaping (Int64) -> Void) {
+    init(descriptor: Int32, didWrite: @escaping (UnsafeRawBufferPointer, Int64) -> Void) {
         self.descriptor = descriptor
         self.didWrite = didWrite
     }
 }
 
-/// A muxer writing into a file through a custom AVIOContext, reporting the running byte total after each
-/// write. The file is created or truncated. Confined to the worker thread that created it.
+/// A muxer writing into a file through a custom AVIOContext. After each write reaches the file it reports
+/// the bytes written and the running total. The file is created or truncated. Confined to the worker
+/// thread that created it.
 final class MuxOutput {
     let context: UnsafeMutablePointer<AVFormatContext>
     private let avio: UnsafeMutablePointer<AVIOContext>
     private let opaque: Unmanaged<OutputContext>
     private var isOpen = true
 
-    init(formatName: String, fileURL: URL, bufferSize: Int, didWrite: @escaping (Int64) -> Void) throws {
+    init(formatName: String, fileURL: URL, bufferSize: Int, didWrite: @escaping (UnsafeRawBufferPointer, Int64) -> Void) throws {
         let descriptor = open(fileURL.path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o600)
         guard descriptor >= 0 else { throw VideoEngineError.writeFailed(code: -errno) }
         var format: UnsafeMutablePointer<AVFormatContext>?
@@ -177,8 +178,6 @@ final class MuxOutput {
     }
 
     deinit { close() }
-
-    var bytesWritten: Int64 { opaque.takeUnretainedValue().written }
 
     func close() {
         guard isOpen else { return }
@@ -255,6 +254,6 @@ private func writePacket(_ opaque: UnsafeMutableRawPointer?, _ buffer: UnsafePoi
         done += count
     }
     output.written += Int64(done)
-    output.didWrite(output.written)
+    output.didWrite(UnsafeRawBufferPointer(start: buffer, count: done), output.written)
     return Int32(done)
 }

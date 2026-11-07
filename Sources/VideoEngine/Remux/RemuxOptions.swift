@@ -31,8 +31,9 @@ public struct RemuxOptions: Sendable {
     public var openTimeout: TimeInterval = 30
     /// Seconds without a new packet before the run fails with `.timedOut`.
     public var stallTimeout: TimeInterval = 20
-    /// Duration for the playlist; nil uses the container's.
-    public var knownDuration: TimeInterval?
+    /// Whether `start(at:)` and `seek(to:)` return the multivariant playlist, which declares the codecs,
+    /// resolution and dynamic range up front, or the media playlist alone.
+    public var multivariantPlaylist = true
     public var tempDirectory = FileManager.default.temporaryDirectory
     public var tempFilePrefix = "videoengine-stream-"
 
@@ -60,6 +61,10 @@ public enum RemuxEvent: Sendable {
     /// The init segment is on disk. `videoSampleEntry` (hvc1, hev1, avc1, ...) is the first thing to check
     /// when the picture stays black.
     case headerWritten(initBytes: Int, videoSampleEntry: String?)
+    /// The output timeline starts at movie time `origin`: the earliest first timestamp of the copied
+    /// streams, relative to the container's start. Subtitles and chapters on the movie timeline line up
+    /// with the output once shifted by it.
+    case timeline(origin: TimeInterval)
     /// Sent at most twice a second.
     case progress(RemuxProgress)
     case finished(RemuxProgress)

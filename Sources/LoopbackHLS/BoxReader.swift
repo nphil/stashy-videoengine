@@ -15,6 +15,10 @@ enum BoxReader {
         return (i >= 0 && b < d.endIndex) ? d[b] : 0
     }
 
+    static func be16(_ d: Data, _ i: Int) -> UInt16 {
+        UInt16(byte(d, i)) << 8 | UInt16(byte(d, i + 1))
+    }
+
     static func be32(_ d: Data, _ i: Int) -> UInt32 {
         let b = d.startIndex + i
         guard i >= 0, b + 4 <= d.endIndex else { return 0 }

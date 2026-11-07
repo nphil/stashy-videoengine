@@ -16,11 +16,14 @@ struct RemuxSessionTests {
         let playlistURL = try session.start()
 
         var sampleEntry: String?
+        var origin: TimeInterval?
         var finished = false
         events: for await event in session.events {
             switch event {
             case .headerWritten(_, let entry):
                 sampleEntry = entry
+            case .timeline(let value):
+                origin = value
             case .finished:
                 finished = true
                 break events
@@ -35,10 +38,23 @@ struct RemuxSessionTests {
         }
         #expect(sampleEntry == "avc1")
         #expect(finished)
+        // The fixture's streams start within a frame of the movie's start.
+        #expect(abs(try #require(origin)) < 0.05)
+        #expect(session.timelineOrigin == origin)
 
-        let (data, _) = try await URLSession.shared.data(from: playlistURL)
-        let playlist = String(decoding: data, as: UTF8.self)
-        #expect(playlist.contains("#EXT-X-MAP:URI=\"media.mp4\""))
+        let (master, _) = try await URLSession.shared.data(from: playlistURL)
+        let variant = String(decoding: master, as: UTF8.self)
+        #expect(playlistURL.lastPathComponent == "master.m3u8")
+        #expect(variant.contains("CODECS=\"avc1."))
+        #expect(variant.contains("RESOLUTION=160x90"))
+        #expect(variant.contains("VIDEO-RANGE=SDR"))
+
+        let (media, _) = try await URLSession.shared.data(from: playlistURL.deletingLastPathComponent().appendingPathComponent("index.m3u8"))
+        let playlist = String(decoding: media, as: UTF8.self)
+        #expect(playlist.contains("#EXT-X-TARGETDURATION:10"))
+        #expect(playlist.contains("#EXT-X-MAP:URI=\"media.mp4\",BYTERANGE="))
+        // One segment per keyframe: the fixture has keyframes 1 s apart.
+        #expect(playlist.components(separatedBy: "#EXTINF:").count - 1 == 3)
         #expect(playlist.contains("#EXT-X-ENDLIST"))
     }
 }

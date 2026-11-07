@@ -65,14 +65,21 @@ public final class RemuxSession: Sendable {
         state.withLock { $0.active?.run }?.progress ?? RemuxProgress()
     }
 
+    /// Movie time at which the current run's output timeline starts, once its first packets are read;
+    /// also sent as `.timeline(origin:)`. A position `t` on the output timeline is movie time `t + origin`.
+    public var timelineOrigin: TimeInterval? {
+        state.withLock { $0.active?.run }?.origin
+    }
+
     /// Starts the first run and returns its playlist URL; returns the current URL when a run exists.
     /// Throws `CancellationError` after `stop()`.
     public func start(at time: TimeInterval = 0) throws -> URL {
         try launch(at: time, replacingCurrent: false)
     }
 
-    /// Replaces the current run with one that starts at `time` (source seconds) and returns its URL.
-    /// The new output's timeline starts at 0, at the keyframe at or before `time`.
+    /// Replaces the current run with one that starts at the keyframe at or before `time` (movie seconds)
+    /// and returns its URL. The new output's timeline starts at that run's origin, so the item is
+    /// positioned at `time - origin` to land on `time` exactly.
     public func seek(to time: TimeInterval) throws -> URL {
         try launch(at: time, replacingCurrent: true)
     }
@@ -108,8 +115,9 @@ public final class RemuxSession: Sendable {
     private func launch(at time: TimeInterval, replacingCurrent: Bool) throws -> URL {
         if !replacingCurrent, let url = try currentURL() { return url }
         let fileURL = options.tempDirectory.appendingPathComponent("\(options.tempFilePrefix)\(UUID().uuidString).mp4")
-        let run = RemuxRun(fileURL: fileURL, startTime: max(0, time), openTimeout: options.openTimeout)
+        let run = RemuxRun(fileURL: fileURL, startTime: max(0, time), openTimeout: options.openTimeout, logger: logger)
         let server = LoopbackServer(routes: [
+            LoopbackRoute(path: "/master.m3u8", .playlist({ run.multivariantPlaylist() })),
             LoopbackRoute(path: "/index.m3u8", .playlist({ run.playlist() })),
             LoopbackRoute(path: "/media.mp4", .growingFile(
                 fileURL, availableBytes: { run.bytesWritten }, isComplete: { run.isComplete }, contentType: "video/mp4"
@@ -121,7 +129,8 @@ public final class RemuxSession: Sendable {
         } catch {
             throw VideoEngineError.serverBindFailed
         }
-        let active = Active(run: run, server: server, url: base.appendingPathComponent("index.m3u8"))
+        let playlist = options.multivariantPlaylist ? "master.m3u8" : "index.m3u8"
+        let active = Active(run: run, server: server, url: base.appendingPathComponent(playlist))
         let swap = state.withLock { state -> (accepted: Bool, previous: Active?, current: URL?) in
             if state.stopped { return (false, nil, nil) }
             if !replacingCurrent, let current = state.active { return (false, nil, current.url) }

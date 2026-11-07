@@ -4,8 +4,9 @@ import os
 import Testing
 @testable import LoopbackHLS
 
-/// Minimal ISO BMFF writer for synthetic fragmented MP4 files.
+/// Minimal ISO BMFF writer for synthetic MP4 files.
 enum MP4 {
+    static func be16(_ value: UInt16) -> Data { withUnsafeBytes(of: value.bigEndian) { Data($0) } }
     static func be32(_ value: UInt32) -> Data { withUnsafeBytes(of: value.bigEndian) { Data($0) } }
     static func be64(_ value: UInt64) -> Data { withUnsafeBytes(of: value.bigEndian) { Data($0) } }
 
@@ -13,23 +14,72 @@ enum MP4 {
         be32(UInt32(8 + payload.count)) + Data(type.utf8) + payload
     }
 
-    /// `ftyp` + `moov` with one video track.
-    static func initSegment(trackID: UInt32, timescale: UInt32, sampleEntry: String = "hvc1") -> Data {
-        let tkhd = box("tkhd", Data([0, 0, 0, 7]) + be32(0) + be32(0) + be32(trackID) + Data(count: 68))
-        let mdhd = box("mdhd", Data(count: 4) + be32(0) + be32(0) + be32(timescale) + be32(0) + Data(count: 4))
-        let hdlr = box("hdlr", Data(count: 8) + Data("vide".utf8) + Data(count: 13))
-        let stsd = box("stsd", Data(count: 4) + be32(1) + box(sampleEntry, Data(count: 78)))
-        let trak = box("trak", tkhd + box("mdia", mdhd + hdlr + box("minf", box("stbl", stsd))))
-        return box("ftyp", Data("iso5".utf8) + be32(512) + Data("iso6mp41".utf8))
-            + box("moov", box("mvhd", Data(count: 100)) + trak)
+    /// A box whose size is written in the 64-bit field.
+    static func largeBox(_ type: String, _ payload: Data) -> Data {
+        be32(1) + Data(type.utf8) + be64(UInt64(16 + payload.count)) + payload
     }
 
-    /// `moof` (with a version 1 `tfdt`) followed by its `mdat`.
-    static func fragment(trackID: UInt32, decodeTime: UInt64, payload: Int) -> Data {
-        let tfhd = box("tfhd", be32(0x02_0000) + be32(trackID))
-        let tfdt = box("tfdt", Data([1, 0, 0, 0]) + be64(decodeTime))
-        return box("moof", box("mfhd", be32(0) + be32(1)) + box("traf", tfhd + tfdt))
-            + box("mdat", Data(count: payload))
+    static func fullBox(_ type: String, flags: UInt32 = 0, _ payload: Data) -> Data {
+        box(type, be32(flags) + payload)
+    }
+
+    /// The 78 bytes of fixed VisualSampleEntry fields, with the coded size at offset 24.
+    static func visualFields(width: UInt16 = 0, height: UInt16 = 0) -> Data {
+        Data(count: 24) + be16(width) + be16(height) + Data(count: 50)
+    }
+
+    /// The 28 bytes of fixed AudioSampleEntry fields (version 0).
+    static let audioFields = Data(count: 28)
+
+    /// A track whose one sample entry holds `fields`, then the child boxes in `children`.
+    static func trak(trackID: UInt32 = 1, timescale: UInt32 = 90_000, handler: String = "vide",
+                     entry: String, fields: Data, children: Data = Data()) -> Data {
+        let tkhd = box("tkhd", Data([0, 0, 0, 7]) + be32(0) + be32(0) + be32(trackID) + Data(count: 68))
+        let mdhd = box("mdhd", Data(count: 4) + be32(0) + be32(0) + be32(timescale) + be32(0) + Data(count: 4))
+        let hdlr = box("hdlr", Data(count: 8) + Data(handler.utf8) + Data(count: 13))
+        let stsd = box("stsd", Data(count: 4) + be32(1) + box(entry, fields + children))
+        return box("trak", tkhd + box("mdia", mdhd + hdlr + box("minf", box("stbl", stsd))))
+    }
+
+    /// `ftyp` + `moov` with the given tracks.
+    static func initSegment(_ traks: Data...) -> Data {
+        movie(traks: traks)
+    }
+
+    /// `ftyp` + `moov` with the given tracks and, unless `trex` is empty, their fragment defaults.
+    static func movie(traks: [Data], trex: [Data] = []) -> Data {
+        let mvex = trex.isEmpty ? Data() : box("mvex", trex.reduce(Data(), +))
+        return box("ftyp", Data("iso5".utf8) + be32(512) + Data("iso6mp41".utf8))
+            + box("moov", box("mvhd", Data(count: 100)) + traks.reduce(Data(), +) + mvex)
+    }
+
+    static func trex(trackID: UInt32, defaultDuration: UInt32) -> Data {
+        fullBox("trex", be32(trackID) + be32(1) + be32(defaultDuration) + be32(0) + be32(0))
+    }
+
+    /// A `traf` with one `trun`: per-sample `durations` when given, otherwise `count` samples whose duration
+    /// comes from `defaultDuration` in the `tfhd`, or from the `trex` when that is nil too.
+    static func traf(trackID: UInt32, durations: [UInt32]? = nil, count: Int = 0, defaultDuration: UInt32? = nil) -> Data {
+        var tfhdFlags: UInt32 = 0x02_0000  // default-base-is-moof
+        var tfhd = be32(trackID)
+        if let defaultDuration {
+            tfhdFlags |= 0x08
+            tfhd += be32(defaultDuration)
+        }
+        let trun: Data
+        if let durations {
+            // Data offset, then a duration and a size per sample.
+            let samples = durations.reduce(Data()) { $0 + be32($1) + be32(100) }
+            trun = fullBox("trun", flags: 0x301, be32(UInt32(durations.count)) + be32(0) + samples)
+        } else {
+            trun = fullBox("trun", flags: 0x200, be32(UInt32(count)) + Data(count: 4 * count))
+        }
+        return box("traf", fullBox("tfhd", flags: tfhdFlags, tfhd) + fullBox("tfdt", be32(0)) + trun)
+    }
+
+    /// A `moof` with the given track fragments, then its `mdat`.
+    static func fragment(_ trafs: Data..., mediaBytes: Int) -> Data {
+        box("moof", fullBox("mfhd", be32(1)) + trafs.reduce(Data(), +)) + box("mdat", Data(count: mediaBytes))
     }
 }
 

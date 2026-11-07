@@ -25,6 +25,7 @@ enum FF {
     static let noPTS: Int64 = .min
     static let swsBilinear: Int32 = 2
     static let packetFlagKey: Int32 = 1
+    static let indexKeyframe: Int32 = 1
 
     static let dispositionDefault: Int32 = 1 << 0
     static let dispositionForced: Int32 = 1 << 6
