@@ -21,16 +21,16 @@ struct SubtitleTrackTests {
         track.add(SubtitleCue(start: 9, end: 13, text: "Spans two slots"))
         track.setOrigin(1)
         track.readThrough(14)
-        #expect(!track.playlist(slotPrefix: "").contains(".vtt"))
+        #expect(track.playlist(slotPrefix: "") == nil)
         #expect(track.slot(0) == nil)
 
         track.readThrough(15)
-        #expect(track.playlist(slotPrefix: "").contains("\n0.vtt\n"))
+        #expect(try #require(track.playlist(slotPrefix: "")).contains("\n0.vtt\n"))
         #expect(try #require(track.slot(0)).contains("00:00:08.000 --> 00:00:12.000\nSpans two slots"))
         #expect(track.slot(1) == nil)
 
         track.finish(duration: 12.5)
-        #expect(track.playlist(slotPrefix: "").hasSuffix("#EXTINF:2.500,\n1.vtt\n#EXT-X-ENDLIST\n"))
+        #expect(try #require(track.playlist(slotPrefix: "")).hasSuffix("#EXTINF:2.500,\n1.vtt\n#EXT-X-ENDLIST\n"))
         // A cue repeats in every slot it overlaps.
         #expect(try #require(track.slot(1)).contains("Spans two slots"))
     }
@@ -39,11 +39,12 @@ struct SubtitleTrackTests {
         let track = SubtitleTrack(targetDuration: 10, holdback: nil)
         track.add(contentsOf: [SubtitleCue(start: 47, end: 49, text: "At the resume point"), SubtitleCue(start: 60, end: 61, text: "Later")])
         track.readThrough(6)
-        #expect(!track.playlist(slotPrefix: "").contains(".vtt"), "nothing before the timeline is fixed")
+        #expect(track.playlist(slotPrefix: "") == nil, "nothing before the timeline is fixed")
 
         track.setOrigin(45)
-        #expect(track.playlist(slotPrefix: "").contains("#EXTINF:10.000,\n0.vtt\n"))
-        #expect(!track.playlist(slotPrefix: "").contains("1.vtt"))
+        let listed = try #require(track.playlist(slotPrefix: ""))
+        #expect(listed.contains("#EXTINF:10.000,\n0.vtt\n"))
+        #expect(!listed.contains("1.vtt"))
         #expect(try #require(track.slot(0)).contains("00:00:02.000 --> 00:00:04.000\nAt the resume point"))
         track.readThrough(10.5)
         #expect(try #require(track.slot(1)).contains("Later"))

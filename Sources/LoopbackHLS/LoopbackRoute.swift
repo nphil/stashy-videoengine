@@ -12,7 +12,8 @@ public struct LoopbackRoute: Sendable {
                          contentType: String)
         /// A fixed body.
         case data(Data, contentType: String)
-        /// A body made for each request from its path; nil answers 404.
+        /// A body made for each request from its path, which may not exist yet. Requests wait for a
+        /// non-nil body, then get 503.
         case generated(@Sendable (_ path: String) -> (body: Data, contentType: String)?)
     }
 

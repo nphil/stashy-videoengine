@@ -49,8 +49,8 @@ public enum WebVTT {
 /// playlist grows with the video's and ends when it does. For cues that arrive as the source is read, a
 /// slot is listed once the producer has read `holdback` seconds past its end, so a listed slot never
 /// gains cues. A track whose cues are all known up front lists a slot as soon as the producer reaches
-/// into it, so a selected rendition covers the video from its first segment instead of listing nothing
-/// for the first `slotDuration + holdback` seconds of a start.
+/// into it. There is no playlist until a slot is listed: AVPlayer fails an item whose selected rendition
+/// answers an empty live playlist (CoreMediaErrorDomain -12888), so the request waits for the first slot.
 public final class SubtitleTrack: Sendable {
     public let slotDuration: Int
     public let targetDuration: Int
@@ -98,9 +98,10 @@ public final class SubtitleTrack: Sendable {
         state.withLock { $0.finalDuration = served }
     }
 
-    /// The media playlist naming each listed slot `<prefix><k>.vtt`.
-    public func playlist(slotPrefix: String) -> String {
+    /// The media playlist naming each listed slot `<prefix><k>.vtt`, or nil until it lists one.
+    public func playlist(slotPrefix: String) -> String? {
         let (count, duration) = state.withLock { s -> (Int, TimeInterval?) in (listedSlots(s), s.finalDuration) }
+        if count == 0, duration == nil { return nil }
         var lines = [
             "#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-TARGETDURATION:\(targetDuration)", "#EXT-X-MEDIA-SEQUENCE:0",
             "#EXT-X-PLAYLIST-TYPE:EVENT",

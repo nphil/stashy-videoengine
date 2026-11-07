@@ -153,10 +153,12 @@ public final class LoopbackServer: Sendable {
         case .data(let body, let contentType)?:
             serveData(request, body: body, contentType: contentType)
         case .generated(let make)?:
-            if let generated = make(path) {
-                serveData(request, body: generated.body, contentType: generated.contentType)
-            } else {
-                reply(request, status: 404, note: "")
+            whenReady({ make(path) }) { generated in
+                guard let generated else {
+                    self.reply(request, status: 503, note: "not ready")
+                    return
+                }
+                self.serveData(request, body: generated.body, contentType: generated.contentType)
             }
         case nil:
             reply(request, status: 404, note: "")

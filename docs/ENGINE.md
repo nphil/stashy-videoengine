@@ -90,7 +90,9 @@ session.stop()
   under their names. A source stream's slot is listed once the producer is
   5 s past it, since its cues arrive as the file is read; a sidecar track's
   cues are all known, so its slots are listed as soon as the video reaches
-  them and a start never offers an empty rendition.
+  them. A subtitle playlist request waits until the playlist lists a slot:
+  AVPlayer fails the item (CoreMediaErrorDomain -12888) when a rendition it
+  selects at load answers an empty live playlist.
   `options.sidecarSubtitles` adds downloaded text tracks. Picture subtitles
   (PGS, VobSub, DVB) decode to `SubtitleOverlayTrack`, which the app draws:
   `session.subtitleStreams[i].overlay?.bitmaps(at: movieTime)`.

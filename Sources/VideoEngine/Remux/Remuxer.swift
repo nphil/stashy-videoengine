@@ -79,14 +79,14 @@ final class RemuxRun: Sendable {
         return HLSMultivariantPlaylist(variants: [variant], subtitles: renditions).render()
     }
 
-    /// Answers `/subs/<n>/index.m3u8` and `/subs/<n>/<slot>.vtt`.
+    /// Answers `/subs/<n>/index.m3u8` and `/subs/<n>/<slot>.vtt`, or nil while the answer does not exist yet.
     func subtitleResponse(_ path: String) -> (body: Data, contentType: String)? {
         let parts = path.split(separator: "/")
         let subtitles = self.subtitles
         guard parts.count == 3, parts[0] == "subs", let n = Int(parts[1]), subtitles.indices.contains(n),
               let track = subtitles[n].webVTT else { return nil }
         if parts[2] == "index.m3u8" {
-            return (Data(track.playlist(slotPrefix: "").utf8), "application/vnd.apple.mpegurl")
+            return track.playlist(slotPrefix: "").map { (Data($0.utf8), "application/vnd.apple.mpegurl") }
         }
         guard parts[2].hasSuffix(".vtt"), let slot = Int(parts[2].dropLast(4)), let body = track.slot(slot) else { return nil }
         return (Data(body.utf8), "text/vtt")

@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Testing
 @testable import LoopbackHLS
 
@@ -47,6 +48,26 @@ struct LoopbackServerTests {
         let reply = try await response
         #expect(reply.status == 206)
         #expect(reply.body == Self.bytes[600..<700])
+    }
+
+    @Test func generatedRouteWaitsForItsBody() async throws {
+        let ready = OSAllocatedUnfairLock(initialState: false)
+        let server = LoopbackServer(routes: [
+            LoopbackRoute(path: "/subs/", .generated { path in
+                ready.withLock { $0 } ? (body: Data(path.utf8), contentType: "text/plain") : nil
+            }),
+        ], waitTimeout: 60)
+        let base = try await server.start()
+        defer { server.stop() }
+
+        async let response = RawHTTP.get(base, "/subs/0/index.m3u8")
+        try await Task.sleep(for: .milliseconds(50))
+        ready.withLock { $0 = true }
+        server.contentChanged()
+
+        let reply = try await response
+        #expect(reply.status == 200)
+        #expect(reply.body == Data("/subs/0/index.m3u8".utf8))
     }
 
     @Test func answersPlaylistsAndUnknownPaths() async throws {
