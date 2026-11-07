@@ -12,8 +12,10 @@
 #      module.modulemap collision / cross-include failures that a naive
 #      per-library -I check would hide.
 #   4. A tiny C program links every lib + the system frameworks and runs on an
-#      iOS simulator, confirming av_version_info() and that the VideoToolbox
-#      encoders are registered at runtime.
+#      iOS simulator, confirming av_version_info() equals
+#      FFmpegSupport.ffmpegVersion, the licence is LGPL, and the required
+#      codecs, demuxers, filters, bitstream filters, protocols and VideoToolbox
+#      hwaccels are registered at runtime.
 # ===========================================================================
 set -euo pipefail
 
@@ -108,7 +110,7 @@ xcrun --sdk iphonesimulator clang -target "$SIM_TRIPLE" \
 log "Swift import of all six modules (swiftc -typecheck)"
 SIM_SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 xcrun --sdk iphonesimulator swiftc -target "$SIM_TRIPLE" -sdk "$SIM_SDK" \
-  -typecheck \
+  -typecheck -swift-version 6 \
   -Xcc -I -Xcc "$FLAT" \
   "$TESTDIR/SwiftImportCheck.swift" \
   && pass "all 6 modules import from Swift" \
@@ -116,7 +118,11 @@ xcrun --sdk iphonesimulator swiftc -target "$SIM_TRIPLE" -sdk "$SIM_SDK" \
 
 # --- 4: link + run on a simulator -----------------------------------------
 log "Compiling + linking simulator smoke test"
+EXPECTED_VERSION="$(sed -n 's/.*ffmpegVersion = "\([^"]*\)".*/\1/p' \
+  "$ROOT/Sources/FFmpegSupport/FFmpegSupport.swift")"
+[ -n "$EXPECTED_VERSION" ] || fail "no ffmpegVersion in Sources/FFmpegSupport/FFmpegSupport.swift"
 xcrun --sdk iphonesimulator clang -target "$SIM_TRIPLE" \
+  -DEXPECTED_FFMPEG_VERSION="\"$EXPECTED_VERSION\"" \
   "$TESTDIR/smoke.c" \
   -I "$THIN/iphonesimulator/include" \
   -L "$THIN/iphonesimulator/lib" \
@@ -129,21 +135,8 @@ xcrun --sdk iphonesimulator clang -target "$SIM_TRIPLE" \
   && pass "smoke test linked" \
   || fail "smoke test failed to link"
 
-log "Selecting an available simulator and running the smoke test"
-# Use a simulator the runner already pre-created (guaranteed device/runtime
-# compatibility) rather than pairing an arbitrary device type with the latest
-# runtime, which can yield SimError 403 "Incompatible device".
-UDID="$(xcrun simctl list devices available -j | python3 -c '
-import sys, json
-data = json.load(sys.stdin)["devices"]
-for runtime, devs in data.items():
-    if "iOS" not in runtime:
-        continue
-    for dev in devs:
-        if dev.get("isAvailable") and "iPhone" in dev.get("name", ""):
-            print(dev["udid"]); sys.exit(0)
-')"
-[ -n "$UDID" ] || fail "no available iOS simulator found on the runner"
+log "Running the smoke test on a pre-created simulator"
+UDID="$(bash "$ROOT/scripts/sim-udid.sh")" || fail "no available iOS simulator found on the runner"
 echo "  using simulator udid: $UDID"
 xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" >/dev/null 2>&1 || true
