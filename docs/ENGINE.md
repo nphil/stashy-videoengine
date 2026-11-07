@@ -28,7 +28,12 @@ never opens a network URL itself.
   A reply counts only when it is 206 with a matching `Content-Range` (or 200
   from offset 0); a dropped connection is retried, then reported as an error,
   never as the end of the file. `knownLength` (Plex `Part.size`) saves the
-  size lookup.
+  size lookup. A read no request covers starts a 512 KiB request, so the
+  header, the index at the end and the resume point each cost one round trip;
+  a sequential run doubles each request up to `readAheadBytes` and keeps two
+  in flight. Reads return as bytes arrive, recent requests stay cached, and
+  `bytesPerSecond` reports the measured link rate
+  (`RemuxProgress.sourceBytesPerSecond`).
 - `FileRangeSource(fileURL:)` reads local files.
 - `ByteRangeSources.make(for:headers:readAheadBytes:)` picks one by scheme.
 
@@ -81,8 +86,11 @@ session.stop()
   segment is retried once as a re-encode.
 - **Subtitles.** Source subtitle streams are read alongside, never muxed. Text
   (SRT, ASS, WebVTT, mov_text) becomes WebVTT renditions of the multivariant
-  playlist (`/subs/<n>/index.m3u8`, fixed 10 s slots, each listed once the
-  producer is 5 s past it), offered by AVPlayer under their names.
+  playlist (`/subs/<n>/index.m3u8`, fixed 10 s slots), offered by AVPlayer
+  under their names. A source stream's slot is listed once the producer is
+  5 s past it, since its cues arrive as the file is read; a sidecar track's
+  cues are all known, so its slots are listed as soon as the video reaches
+  them and a start never offers an empty rendition.
   `options.sidecarSubtitles` adds downloaded text tracks. Picture subtitles
   (PGS, VobSub, DVB) decode to `SubtitleOverlayTrack`, which the app draws:
   `session.subtitleStreams[i].overlay?.bitmaps(at: movieTime)`.

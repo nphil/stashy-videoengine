@@ -738,7 +738,7 @@ struct Remuxer: Sendable {
             offered.append(info)
         }
         for sidecar in options.sidecarSubtitles {
-            let track = SubtitleTrack(targetDuration: targetDuration)
+            let track = SubtitleTrack(targetDuration: targetDuration, holdback: nil)
             track.add(contentsOf: sidecar.cues)
             offered.append(RemuxSubtitle(
                 streamIndex: nil, name: unique(sidecar.name), language: SubtitleLanguage.tag(sidecar.language),

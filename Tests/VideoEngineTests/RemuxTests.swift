@@ -1,4 +1,6 @@
 import Foundation
+import LoopbackHLS
+import os
 import Testing
 @testable import VideoEngine
 
@@ -120,5 +122,72 @@ struct RemuxSessionTests {
         #expect(cues.hasPrefix("WEBVTT\n"))
         #expect(cues.contains("Hello"))
         #expect(cues.contains("World"))
+    }
+
+    /// A resumed start over a slow link: once the master playlist answers, a sidecar rendition already
+    /// lists the slot under the first video segment. The source stops 8 s past the resume point, so the
+    /// run cannot read on and finish before the playlists are read.
+    @Test func sidecarSubtitlesCoverTheFirstSegmentOfASlowResumedStart() async throws {
+        let fixture = try Fixture.url("h264-aac-60s.mkv")
+        // The keyframe at 48 s sits at byte 229_974; the index at the end stays readable.
+        let source = try GatedSource(fixture, stopAt: 229_974)
+        var options = RemuxOptions()
+        options.sidecarSubtitles = [SidecarSubtitles(
+            name: "English", language: "en", isDefault: true, isForced: true,
+            cues: [SubtitleCue(start: 41, end: 43, text: "Forced")]
+        )]
+        let session = RemuxSession(sourceFactory: { source }, options: options)
+        defer { session.stop() }
+        let base = try await session.start(at: 40.5).deletingLastPathComponent()
+        let deadline = ContinuousClock.now + .seconds(30)
+        while !source.isWaiting, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(source.isWaiting)
+
+        func text(_ path: String) async throws -> String {
+            String(decoding: try await URLSession.shared.data(from: base.appendingPathComponent(path)).0, as: UTF8.self)
+        }
+        #expect(try await text("master.m3u8").contains("FORCED=YES"))
+        #expect(try await text("index.m3u8").contains("#EXTINF"))
+        let subtitles = try await text("subs/0/index.m3u8")
+        #expect(subtitles.contains("\n0.vtt\n"))
+        #expect(!subtitles.contains("#EXT-X-ENDLIST"))
+        #expect(try await text("subs/0/0.vtt").contains("Forced"))
+    }
+}
+
+/// A file whose bytes from `stopAt` on, short of the last 16 KiB, never arrive: a link that stalls
+/// past the resume point. Reads wait there until cancelled.
+private final class GatedSource: ByteRangeSource {
+    private let base: FileRangeSource
+    private let stopAt: Int64
+    private let size: Int64
+    private let waiting = OSAllocatedUnfairLock(initialState: false)
+    private let wake = DispatchSemaphore(value: 0)
+
+    init(_ url: URL, stopAt: Int64) throws {
+        base = try FileRangeSource(fileURL: url)
+        self.stopAt = stopAt
+        size = try base.length() ?? 0
+    }
+
+    var logName: String { "gated-" + base.logName }
+    var isWaiting: Bool { waiting.withLock { $0 } }
+    func length() throws -> Int64? { size }
+
+    func read(at offset: Int64, into buffer: UnsafeMutableRawBufferPointer) throws -> Int {
+        let tail = size - (16 << 10)
+        if offset >= stopAt, offset < tail {
+            waiting.withLock { $0 = true }
+            wake.wait()
+            throw CancellationError()
+        }
+        let end = offset < stopAt ? min(stopAt, tail) : size
+        let count = min(buffer.count, Int(max(0, end - offset)))
+        return try base.read(at: offset, into: UnsafeMutableRawBufferPointer(rebasing: buffer[0..<count]))
+    }
+
+    func cancel() {
+        base.cancel()
+        wake.signal()
     }
 }

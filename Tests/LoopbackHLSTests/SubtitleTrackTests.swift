@@ -35,6 +35,20 @@ struct SubtitleTrackTests {
         #expect(try #require(track.slot(1)).contains("Spans two slots"))
     }
 
+    @Test func listsCompleteCuesAsSoonAsTheVideoReachesThem() throws {
+        let track = SubtitleTrack(targetDuration: 10, holdback: nil)
+        track.add(contentsOf: [SubtitleCue(start: 47, end: 49, text: "At the resume point"), SubtitleCue(start: 60, end: 61, text: "Later")])
+        track.readThrough(6)
+        #expect(!track.playlist(slotPrefix: "").contains(".vtt"), "nothing before the timeline is fixed")
+
+        track.setOrigin(45)
+        #expect(track.playlist(slotPrefix: "").contains("#EXTINF:10.000,\n0.vtt\n"))
+        #expect(!track.playlist(slotPrefix: "").contains("1.vtt"))
+        #expect(try #require(track.slot(0)).contains("00:00:02.000 --> 00:00:04.000\nAt the resume point"))
+        track.readThrough(10.5)
+        #expect(try #require(track.slot(1)).contains("Later"))
+    }
+
     @Test func multivariantPlaylistOffersSubtitleRenditions() {
         let variant = HLSVariant(uri: "index.m3u8", bandwidth: 1_000_000)
         let rendition = HLSSubtitleRendition(name: "English", language: "en", uri: "subs/0/index.m3u8", forced: true)

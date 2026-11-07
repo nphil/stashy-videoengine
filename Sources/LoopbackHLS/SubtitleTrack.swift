@@ -46,12 +46,15 @@ public enum WebVTT {
 
 /// The cues of one subtitle rendition, served as fixed WebVTT slots that are independent of the video's
 /// segments. A slot holds every cue overlapping it, so a cue repeats in each slot it touches. The
-/// playlist grows with the video's and ends when it does; a slot is listed once the producer has read
-/// `holdback` seconds past its end, so a listed slot never gains cues.
+/// playlist grows with the video's and ends when it does. For cues that arrive as the source is read, a
+/// slot is listed once the producer has read `holdback` seconds past its end, so a listed slot never
+/// gains cues. A track whose cues are all known up front lists a slot as soon as the producer reaches
+/// into it, so a selected rendition covers the video from its first segment instead of listing nothing
+/// for the first `slotDuration + holdback` seconds of a start.
 public final class SubtitleTrack: Sendable {
     public let slotDuration: Int
     public let targetDuration: Int
-    private let holdback: TimeInterval
+    private let holdback: TimeInterval?
 
     private struct State {
         var cues: [SubtitleCue] = []
@@ -64,8 +67,10 @@ public final class SubtitleTrack: Sendable {
 
     private let state = OSAllocatedUnfairLock(initialState: State())
 
-    /// - Parameter targetDuration: the video playlist's, so both declare the same value.
-    public init(targetDuration: Int, slotDuration: Int = 10, holdback: TimeInterval = 5) {
+    /// - Parameters:
+    ///   - targetDuration: the video playlist's, so both declare the same value.
+    ///   - holdback: seconds read past a slot's end before it is listed; nil when every cue is known up front.
+    public init(targetDuration: Int, slotDuration: Int = 10, holdback: TimeInterval? = 5) {
         self.targetDuration = max(targetDuration, slotDuration)
         self.slotDuration = slotDuration
         self.holdback = holdback
@@ -124,7 +129,9 @@ public final class SubtitleTrack: Sendable {
 
     private func listedSlots(_ s: State) -> Int {
         guard s.origin != nil else { return 0 }
-        if let duration = s.finalDuration { return Int((duration / TimeInterval(slotDuration)).rounded(.up)) }
-        return max(0, Int(((s.readThrough - holdback) / TimeInterval(slotDuration)).rounded(.down)))
+        let slot = TimeInterval(slotDuration)
+        if let duration = s.finalDuration { return Int((duration / slot).rounded(.up)) }
+        guard let holdback else { return Int((s.readThrough / slot).rounded(.up)) }
+        return max(0, Int(((s.readThrough - holdback) / slot).rounded(.down)))
     }
 }
