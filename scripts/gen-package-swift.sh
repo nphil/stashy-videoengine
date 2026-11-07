@@ -28,9 +28,12 @@ LOCAL="${LOCAL_XCFRAMEWORKS:-0}"
 # SwiftPM target name -> xcframework basename lib<name>
 LIBS=(avutil avcodec avformat avfilter swscale swresample)
 
+# Reads the committed manifest: `gen-package-swift.sh > Package.swift` empties
+# the working copy before this script starts.
 pinned_tag() {
-  local m
-  m="$(grep -m 1 -o 'releases/download/[^/]*/' "$ROOT/Package.swift")" \
+  local manifest m
+  manifest="$(git -C "$ROOT" show HEAD:Package.swift 2>/dev/null || cat "$ROOT/Package.swift")"
+  m="$(grep -m 1 -o 'releases/download/[^/]*/' <<< "$manifest")" \
     || { echo "Package.swift pins no release; pass a tag or BINARIES_TAG" >&2; exit 1; }
   m="${m#releases/download/}"
   printf '%s\n' "${m%/}"
