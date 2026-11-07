@@ -10,21 +10,32 @@ on:
       - 'scripts/build-deps.sh'
       - 'scripts/verify.sh'
       - 'scripts/sim-udid.sh'
+      - 'scripts/package-sources.sh'
       - 'test/**'
       - '.github/workflows/build.yml'
+      - '.github/workflows/consumer-check.yml'
   workflow_dispatch:
     inputs:
       release_tag:
         description: 'Tag to release (e.g. v1.0.0). Leave empty to only build + verify.'
         type: string
         default: ''
+      force_overwrite:
+        description: 'Overwrite an existing tag and its assets (breaks consumers that resolved it)'
+        type: boolean
+        default: false
+      summary:
+        description: 'What changed, opening the release notes'
+        type: string
+        default: ''
 
 permissions:
-  contents: write
+  contents: read
 
+# A push cancels the previous push build; a release run is never cancelled.
 concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
+  group: build-${{ github.ref }}-${{ inputs.release_tag }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   build:
@@ -94,17 +105,48 @@ jobs:
       - name: Swift package against the fresh XCFrameworks
         run: bash scripts/swift-test.sh --local
 
+      - name: Source archives, licences and build information
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: bash scripts/package-sources.sh
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: xcframeworks
-          path: |
-            build/dist/*.xcframework.zip
-            build/dist/checksums.txt
+          name: dist
+          path: build/dist
           if-no-files-found: error
 
+  stashy:
+    needs: build
+    uses: ./.github/workflows/consumer-check.yml
+    with:
+      fresh_binaries: true
+
+  release:
+    needs: [build, stashy]
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: build/dist
+
       - name: Release
-        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/release.sh "${{ inputs.release_tag }}"
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          FORCE: ${{ inputs.force_overwrite && '1' || '0' }}
+          SUMMARY: ${{ inputs.summary }}
+        run: bash scripts/release.sh "$RELEASE_TAG"
+
+  published:
+    needs: release
+    uses: ./.github/workflows/consumer-check.yml
+    with:
+      tag: ${{ inputs.release_tag }}

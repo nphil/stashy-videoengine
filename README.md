@@ -115,24 +115,29 @@ There is no local Mac in the loop.
 scripts/build-ffmpeg.sh       # configure + build per-arch, create 6 xcframeworks
 scripts/verify.sh             # inspect slices, validate module maps, run a
                               #   simulator smoke test
+scripts/package-sources.sh    # source archives, licence texts, build info
 scripts/gen-package-swift.sh  # render Package.swift (release binaries, or
                               #   build/xcframeworks with LOCAL_XCFRAMEWORKS=1)
 scripts/swift-test.sh         # build the package, run its tests on a simulator
-scripts/release.sh            # create the Release + push the pinned manifest
+scripts/release.sh            # pin Package.swift, tag, create the Release
 .github/workflows/build.yml          # binaries
 .github/workflows/swift-tests.yml    # Swift package, every branch
 .github/workflows/consumer-check.yml # Stashy builds against the engine
 ```
 
-- **Push to `main`** → builds + verifies + uploads the zipped xcframeworks and
-  `checksums.txt` as workflow artifacts.
-- **Run the workflow manually with a `release_tag`** → all of the above, then
-  regenerates `Package.swift` pinned to this build's SHA-256 checksums, commits
-  it to `main`, tags that commit, and creates a GitHub Release with the six
-  zips + `checksums.txt`.
+- **Push to `main`** touching the build → builds, verifies, packages sources
+  and licences, uploads everything as the `dist` workflow artifact, then
+  builds Stashy against those binaries.
+- **Run the build workflow manually with a `release_tag`** → all of the
+  above, then (only if Stashy built) regenerates `Package.swift` pinned to this
+  build's SHA-256 checksums, commits it to `main`, tags that commit, creates
+  the GitHub Release, and builds Stashy once more against the published tag.
 - **Push touching `Sources/`, `Tests/` or `Package.swift`** (any branch) → the
   Swift tests workflow builds the package against the binaries `Package.swift`
   pins and runs its tests on an iOS simulator, without rebuilding FFmpeg.
+- **Run the Swift tests workflow manually with a `release_tag`** → a Swift-only
+  release: tests, the Stashy check, then a tag whose `Package.swift` keeps the
+  XCFrameworks of the release it already pins.
 
 `Package.swift` is generated and follows the tree: after adding or removing a
 target directory, run `bash scripts/gen-package-swift.sh > Package.swift`. The
@@ -141,27 +146,52 @@ Swift tests fail while the committed file differs from the generator's output.
 The release is dispatch-driven (not tag-push-driven) on purpose: the tag is
 created *after* the build, on the commit that already holds the matching
 `Package.swift`, so a `v1.0.0` checkout resolves checksums that match the
-release assets.
+release assets. A published tag is never moved, since consumers have resolved
+its checksums; `force_overwrite` exists only to finish a half-published
+release.
 
 ### Cut a release
 
 ```bash
-gh workflow run "Build FFmpeg XCFrameworks" -f release_tag=v1.0.0
+# New binaries
+gh workflow run "Build FFmpeg XCFrameworks" -f release_tag=v1.3.0 -f summary="..."
+# Swift changes only, same binaries
+gh workflow run "Swift tests" -f release_tag=v1.4.0 -f summary="..."
 ```
+
+Releases from v1.3.0 carry:
+
+| Asset | Contents |
+|---|---|
+| `lib*.xcframework.zip`, `checksums.txt` | the binaries (binary releases only) |
+| `Package.swift` | the manifest the tag pins |
+| `LICENSES.zip` | `NOTICE.txt` (attribution text for an app's About screen), every licence text, `BUILDINFO.txt` |
+| `SOURCES.txt` | version, origin, commit and SHA-256 of each library's source |
+| `*.tar.gz`, `*.tar.xz` | the exact sources the binaries were built from (binary releases only) |
+| `BUILDINFO.txt` | Xcode, SDKs, minimum iOS, FFmpeg configure lines |
 
 ## License & attribution
 
-The build scripts in this repo are MIT (see [LICENSE](LICENSE)). The XCFramework
-**artifacts** are builds of [FFmpeg](https://ffmpeg.org), licensed under
-**LGPL-2.1-or-later**:
+The build scripts, configuration and Swift sources in this repo are MIT (see
+[LICENSE](LICENSE)). The XCFramework **artifacts** contain:
 
-- Configured **without** `--enable-gpl` and **without** x264/x265 — no GPL code
-  is linked in.
-- `h264_videotoolbox` / `hevc_videotoolbox` are Apple framework encoders; they
-  pull in no GPL.
-- FFmpeg source for the pinned tag: <https://github.com/FFmpeg/FFmpeg/tree/n8.1.3>
+| Component | Version | Licence |
+|---|---|---|
+| [FFmpeg](https://ffmpeg.org) | n8.1.3 | LGPL-2.1-or-later |
+| [dav1d](https://code.videolan.org/videolan/dav1d) | 1.5.4 | BSD-2-Clause |
+| [FreeType](https://freetype.org) | 2.13.3 | FreeType License |
+| [FriBiDi](https://github.com/fribidi/fribidi) | 1.0.18 | LGPL-2.1-or-later |
+| [HarfBuzz](https://harfbuzz.github.io) | 11.5.1 | MIT |
+| [libass](https://github.com/libass/libass) | 0.17.5 | ISC |
+| [zimg](https://github.com/sekrit-twc/zimg) | release-3.0.6 | WTFPL |
 
-When shipping an app that links these, include FFmpeg's `COPYING.LGPLv2.1`, an
-attribution notice, and an offer of the corresponding source (a link to the tag
-above satisfies this). H.264/HEVC patent licensing is a separate matter from
-the software license.
+FFmpeg is configured **without** `--enable-gpl` and **without** x264/x265, so
+no GPL code is linked in; the smoke test fails any build whose
+`avutil_license()` is not LGPL. `h264_videotoolbox` / `hevc_videotoolbox` are
+Apple framework encoders and pull in no GPL.
+
+An app that links these must show the attribution notice, ship the licence
+texts and offer the corresponding source: `LICENSES.zip` of the release it
+uses carries the first two, and its `NOTICE.txt` points at the release that
+holds the sources. H.264/HEVC patent licensing is a separate matter from the
+software licence.

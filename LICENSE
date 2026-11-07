@@ -21,9 +21,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ---------------------------------------------------------------------------
-NOTE: This MIT license applies ONLY to the build scripts and configuration in
-this repository. The XCFramework artifacts produced by these scripts are
-builds of FFmpeg (https://ffmpeg.org) and are licensed under the GNU Lesser
-General Public License v2.1 or later (LGPL-2.1+). They are configured WITHOUT
---enable-gpl and WITHOUT x264/x265, so no GPL code is included. See README.md
-for full attribution and source-offer details.
+NOTE: This MIT license applies to the build scripts, the configuration and the
+Swift sources (Sources/, Tests/) in this repository. The XCFramework artifacts
+produced by these scripts are builds of FFmpeg (https://ffmpeg.org), licensed
+under the GNU Lesser General Public License v2.1 or later (LGPL-2.1+). They
+are configured WITHOUT --enable-gpl and WITHOUT x264/x265, so no GPL code is
+included, and they also contain dav1d (BSD-2-Clause), FreeType (FreeType
+License), FriBiDi (LGPL-2.1+), HarfBuzz (MIT), libass (ISC) and zimg (WTFPL).
+Releases from v1.3.0 carry those licence texts and an attribution notice in
+LICENSES.zip, and the corresponding source in SOURCES.txt and the attached
+source archives. See README.md.

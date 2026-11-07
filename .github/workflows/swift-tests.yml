@@ -3,6 +3,10 @@ name: Swift tests
 # Builds the Swift package against the binaries Package.swift pins and runs
 # its tests on an iOS simulator. Runs on every branch, so Swift work is
 # checked without rebuilding FFmpeg.
+#
+# Run manually from main with release_tag to cut a Swift-only release: the
+# tests and the Stashy consumer check pass first, then the new tag pins the
+# XCFrameworks of the release Package.swift already uses.
 
 on:
   push:
@@ -15,10 +19,26 @@ on:
       - 'scripts/sim-udid.sh'
       - '.github/workflows/swift-tests.yml'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Swift-only release tag (e.g. v1.4.0). Leave empty to only test.'
+        type: string
+        default: ''
+      force_overwrite:
+        description: 'Overwrite an existing tag and its assets (breaks consumers that resolved it)'
+        type: boolean
+        default: false
+      summary:
+        description: 'What changed, opening the release notes'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
 
 concurrency:
-  group: swift-tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: swift-tests-${{ github.ref }}-${{ inputs.release_tag }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   test:
@@ -35,3 +55,32 @@ jobs:
 
       - name: Swift tests
         run: bash scripts/swift-test.sh
+
+  stashy:
+    needs: test
+    if: inputs.release_tag != ''
+    uses: ./.github/workflows/consumer-check.yml
+
+  release:
+    needs: [test, stashy]
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REUSE_BINARIES: "1"
+          FORCE: ${{ inputs.force_overwrite && '1' || '0' }}
+          SUMMARY: ${{ inputs.summary }}
+        run: bash scripts/release.sh "$RELEASE_TAG"
+
+  published:
+    needs: release
+    uses: ./.github/workflows/consumer-check.yml
+    with:
+      tag: ${{ inputs.release_tag }}

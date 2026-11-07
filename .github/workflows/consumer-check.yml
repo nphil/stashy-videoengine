@@ -12,6 +12,10 @@ on:
         description: Use the dist artifact of the calling run instead of the binaries Package.swift pins
         type: boolean
         default: false
+      tag:
+        description: Published engine tag to resolve from GitHub instead of this checkout
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       tag:
