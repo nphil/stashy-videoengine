@@ -4,6 +4,10 @@
 # Build outputs
 /build/
 
+# SwiftPM state from building the package in place
+/.build/
+/.swiftpm/
+
 # macOS / Xcode noise
 .DS_Store
 *.xcuserstate

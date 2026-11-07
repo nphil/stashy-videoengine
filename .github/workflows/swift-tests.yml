@@ -1,0 +1,37 @@
+name: Swift tests
+
+# Builds the Swift package against the binaries Package.swift pins and runs
+# its tests on an iOS simulator. Runs on every branch, so Swift work is
+# checked without rebuilding FFmpeg.
+
+on:
+  push:
+    paths:
+      - 'Sources/**'
+      - 'Tests/**'
+      - 'Package.swift'
+      - 'scripts/gen-package-swift.sh'
+      - 'scripts/swift-test.sh'
+      - 'scripts/sim-udid.sh'
+      - '.github/workflows/swift-tests.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: swift-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Package builds, tests pass (iOS simulator)
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 27.1
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+
+      - name: Swift tests
+        run: bash scripts/swift-test.sh

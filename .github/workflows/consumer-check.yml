@@ -1,0 +1,139 @@
+name: Stashy consumer check
+
+# Builds Stashy (nphil/stashy, read-only) against a candidate engine the way
+# Stashy's own CI does: macos-15, its newest Xcode, XcodeGen, an unsigned
+# Release build for generic iOS. Stashy's package entry is pointed at the
+# engine checkout, or at a published tag. Nothing is pushed to Stashy.
+
+on:
+  workflow_call:
+    inputs:
+      fresh_binaries:
+        description: Use the dist artifact of the calling run instead of the binaries Package.swift pins
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published engine tag, resolved from GitHub as SwiftPM would (empty: this commit and the binaries its Package.swift pins)'
+        type: string
+        default: ''
+
+jobs:
+  stashy:
+    name: Stashy builds against the engine
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Check out the engine
+        uses: actions/checkout@v4
+        with:
+          # The directory name is the local package's identity; it must match
+          # the remote package's.
+          path: stashy-videoengine
+
+      - name: Fetch this run's binaries
+        if: inputs.fresh_binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: stashy-videoengine/build/dist
+
+      - name: Point the engine manifest at them
+        if: inputs.fresh_binaries
+        working-directory: stashy-videoengine
+        run: |
+          mkdir -p build/xcframeworks
+          for z in build/dist/lib*.xcframework.zip; do ditto -x -k "$z" build/xcframeworks; done
+          LOCAL_XCFRAMEWORKS=1 bash scripts/gen-package-swift.sh > build/Package.swift.local
+          mv build/Package.swift.local Package.swift
+
+      - name: Check out Stashy
+        uses: actions/checkout@v4
+        with:
+          repository: nphil/stashy
+          path: stashy
+
+      - name: Point Stashy at the candidate
+        working-directory: stashy/ios
+        env:
+          ENGINE_PATH: ${{ github.workspace }}/stashy-videoengine
+          ENGINE_TAG: ${{ inputs.tag }}
+        run: |
+          git -C .. log -1 --format='Stashy %h %s'
+          python3 - <<'PY'
+          import os, re, sys
+          text = open("project.yml").read()
+          m = re.search(r"^([ \t]+)stashy-videoengine:[ \t]*\n((?:\1[ \t]+\S.*\n)+)", text, re.M)
+          if not m:
+              sys.exit("no stashy-videoengine entry under packages: in ios/project.yml")
+          inner = re.match(r"[ \t]+", m.group(2)).group(0)
+          tag = os.environ.get("ENGINE_TAG", "")
+          if tag:
+              entry = inner + "url: https://github.com/nphil/stashy-videoengine.git\n" + inner + 'exactVersion: "' + tag.lstrip("v") + '"\n'
+          else:
+              entry = inner + "path: " + os.environ["ENGINE_PATH"] + "\n"
+          open("project.yml", "w").write(text[:m.start(2)] + entry + text[m.end(2):])
+          print(m.group(1) + "stashy-videoengine:\n" + entry, end="")
+          PY
+
+      - name: Select Stashy's Xcode (newest installed)
+        run: |
+          LATEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          sudo xcode-select -s "$LATEST"
+          xcodebuild -version
+
+      - name: Generate the Xcode project
+        working-directory: stashy/ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Resolve packages
+        working-directory: stashy/ios
+        run: |
+          for attempt in 1 2 3; do
+            if xcodebuild -resolvePackageDependencies -project Stashy.xcodeproj -scheme Stashy \
+                 -derivedDataPath build/DD; then
+              cat Stashy.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved 2>/dev/null || true
+              exit 0
+            fi
+            echo "resolve failed (attempt $attempt of 3)"
+            sleep $((attempt * 20))
+          done
+          exit 1
+
+      - name: Build Stashy (Release, unsigned, generic iOS)
+        working-directory: stashy/ios
+        run: |
+          # Stashy's CI tolerates a non-zero exit from xcodebuild's final
+          # validation and gates on compiler errors and the linked executable
+          # instead; the same gates apply here.
+          set +e
+          xcodebuild build -project Stashy.xcodeproj -scheme Stashy -configuration Release \
+            -destination "generic/platform=iOS" -derivedDataPath build/DD \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            > xcodebuild.log 2>&1
+          status=$?
+          set -e
+          grep -E '^ld: |Undefined symbols|built for newer' xcodebuild.log | sort -u | head -40 || true
+          if grep -qE ':[0-9]+:[0-9]+: error: ' xcodebuild.log; then
+            grep -E ':[0-9]+:[0-9]+: error: ' xcodebuild.log | sort -u
+            exit 1
+          fi
+          APP=$(find build/DD/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' 2>/dev/null | head -1)
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist" 2>/dev/null || echo Stashy)
+          if [ -z "$APP" ] || [ ! -s "$APP/$EXE" ]; then
+            tail -60 xcodebuild.log
+            echo "Stashy did not link against the engine (xcodebuild exit $status)"
+            exit 1
+          fi
+          echo "Stashy linked against the engine: $APP/$EXE ($(stat -f %z "$APP/$EXE") bytes, xcodebuild exit $status)"
+
+      - name: Keep the build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stashy-xcodebuild-log
+          path: stashy/ios/xcodebuild.log
+          if-no-files-found: ignore

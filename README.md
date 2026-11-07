@@ -109,12 +109,16 @@ Everything runs on a GitHub Actions `macos-15` runner — there is no local Mac
 in the loop.
 
 ```
-scripts/build-ffmpeg.sh   # configure + build per-arch, create 6 xcframeworks
-scripts/verify.sh         # inspect slices, validate module maps, run a
-                          #   simulator smoke test
-scripts/gen-package-swift.sh  # render Package.swift pinned to a release
-scripts/release.sh        # create the Release + push the pinned manifest
-.github/workflows/build.yml
+scripts/build-ffmpeg.sh       # configure + build per-arch, create 6 xcframeworks
+scripts/verify.sh             # inspect slices, validate module maps, run a
+                              #   simulator smoke test
+scripts/gen-package-swift.sh  # render Package.swift (release binaries, or
+                              #   build/xcframeworks with LOCAL_XCFRAMEWORKS=1)
+scripts/swift-test.sh         # build the package, run its tests on a simulator
+scripts/release.sh            # create the Release + push the pinned manifest
+.github/workflows/build.yml          # binaries
+.github/workflows/swift-tests.yml    # Swift package, every branch
+.github/workflows/consumer-check.yml # Stashy builds against the engine
 ```
 
 - **Push to `main`** → builds + verifies + uploads the zipped xcframeworks and
@@ -123,6 +127,13 @@ scripts/release.sh        # create the Release + push the pinned manifest
   regenerates `Package.swift` pinned to this build's SHA-256 checksums, commits
   it to `main`, tags that commit, and creates a GitHub Release with the six
   zips + `checksums.txt`.
+- **Push touching `Sources/`, `Tests/` or `Package.swift`** (any branch) → the
+  Swift tests workflow builds the package against the binaries `Package.swift`
+  pins and runs its tests on an iOS simulator, without rebuilding FFmpeg.
+
+`Package.swift` is generated and follows the tree: after adding or removing a
+target directory, run `bash scripts/gen-package-swift.sh > Package.swift`. The
+Swift tests fail while the committed file differs from the generator's output.
 
 The release is dispatch-driven (not tag-push-driven) on purpose: the tag is
 created *after* the build, on the commit that already holds the matching
