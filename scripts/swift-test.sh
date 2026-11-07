@@ -35,23 +35,20 @@ else
     || die "Package.swift is stale; regenerate: bash scripts/gen-package-swift.sh > Package.swift"
 fi
 
-SCHEMES="$(xcodebuild -list -json | python3 -c '
-import json, sys
-data = json.load(sys.stdin)
-print("\n".join((data.get("workspace") or data.get("project") or {}).get("schemes", [])))
+# The scheme that builds every target and runs every test is named after the
+# package (Xcode 27.1 lists only that one), or <package>-Package.
+SCHEME="$(xcodebuild -list -json | python3 -c '
+import json, re, sys
+info = json.load(sys.stdin)
+schemes = (info.get("workspace") or info.get("project") or {}).get("schemes", [])
+package = re.search(r"Package\(\s*name:\s*\"([^\"]+)\"", open("Package.swift").read()).group(1)
+for name in (package + "-Package", package):
+    if name in schemes:
+        print(name)
+        sys.exit(0)
+sys.exit("no scheme for package %s among %s" % (package, schemes))
 ')"
-echo "schemes:"
-printf '  %s\n' $SCHEMES
-SCHEME=""
-for s in $SCHEMES; do
-  case "$s" in *-Package) SCHEME="$s" ;; esac
-done
-if [ -z "$SCHEME" ]; then
-  for s in $SCHEMES; do
-    case "$s" in FFmpeg) SCHEME="$s" ;; esac
-  done
-fi
-[ -n "$SCHEME" ] || die "no package scheme to build"
+echo "scheme: $SCHEME"
 
 log "Resolving packages"
 attempt=1
