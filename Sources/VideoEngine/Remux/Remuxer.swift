@@ -17,6 +17,7 @@ final class RemuxRun: Sendable {
         var index: FragmentIndex?
         var variant: HLSVariant?
         var origin: TimeInterval?
+        var subtitles: [RemuxSubtitle] = []
         /// Start-up timings, reported once the first media playlist is served.
         var stages: [(String, String)] = []
         var startupReported = false
@@ -44,6 +45,9 @@ final class RemuxRun: Sendable {
     var sourceSize: Int64? { state.withLock { $0.sourceSize } }
     var origin: TimeInterval? { state.withLock { $0.origin } }
     var index: FragmentIndex? { state.withLock { $0.index } }
+    var subtitles: [RemuxSubtitle] { state.withLock { $0.subtitles } }
+
+    func setSubtitles(_ subtitles: [RemuxSubtitle]) { state.withLock { $0.subtitles = subtitles } }
 
     /// The media playlist, or nil until the first segment is sealed.
     func playlist() -> String? {
@@ -52,9 +56,35 @@ final class RemuxRun: Sendable {
         return playlist
     }
 
-    /// The multivariant playlist, or nil until the init segment is written.
+    /// The multivariant playlist, or nil until the init segment is written. Text subtitles are its
+    /// WebVTT renditions.
     func multivariantPlaylist() -> String? {
-        state.withLock { $0.variant }.map { HLSMultivariantPlaylist(variants: [$0]).render() }
+        let (variant, subtitles) = state.withLock { ($0.variant, $0.subtitles) }
+        guard let variant else { return nil }
+        let renditions = subtitles.indices.compactMap { i -> HLSSubtitleRendition? in
+            let subtitle = subtitles[i]
+            guard subtitle.webVTT != nil else { return nil }
+            return HLSSubtitleRendition(
+                name: subtitle.name, language: subtitle.language, uri: "subs/\(i)/index.m3u8",
+                isDefault: subtitle.isDefault, forced: subtitle.isForced,
+                characteristics: subtitle.isHearingImpaired
+                    ? ["public.accessibility.transcribes-spoken-dialog", "public.accessibility.describes-music-and-sound"] : []
+            )
+        }
+        return HLSMultivariantPlaylist(variants: [variant], subtitles: renditions).render()
+    }
+
+    /// Answers `/subs/<n>/index.m3u8` and `/subs/<n>/<slot>.vtt`.
+    func subtitleResponse(_ path: String) -> (body: Data, contentType: String)? {
+        let parts = path.split(separator: "/")
+        let subtitles = self.subtitles
+        guard parts.count == 3, parts[0] == "subs", let n = Int(parts[1]), subtitles.indices.contains(n),
+              let track = subtitles[n].webVTT else { return nil }
+        if parts[2] == "index.m3u8" {
+            return (Data(track.playlist(slotPrefix: "").utf8), "application/vnd.apple.mpegurl")
+        }
+        guard parts[2].hasSuffix(".vtt"), let slot = Int(parts[2].dropLast(4)), let body = track.slot(slot) else { return nil }
+        return (Data(body.utf8), "text/vtt")
     }
 
     func setPlayhead(_ seconds: TimeInterval) { state.withLock { $0.playhead = seconds } }
@@ -213,6 +243,7 @@ struct Remuxer: Sendable {
             mediaName: "media.mp4", targetDuration: Self.targetDuration(of: input.context, videoIndex: videoIndex)
         )
         let sealer = FragmentSealer(index: index)
+        let subtitles = tapSubtitles(of: input.context, targetDuration: index.targetDuration)
         run.opened(sourceSize: try? source.length(), index: index)
 
         let run = self.run
@@ -237,7 +268,7 @@ struct Remuxer: Sendable {
         announceWhenReady()
         try copyPackets(
             from: input, to: output, mapping: mapping, videoIndex: videoIndex, filters: filters, reencoder: reencoder,
-            sealer: sealer, afterWrite: announceWhenReady
+            subtitles: subtitles, sealer: sealer, afterWrite: announceWhenReady
         )
         run.markComplete()
         index.finish()
@@ -476,8 +507,10 @@ struct Remuxer: Sendable {
     /// at the earliest first timestamp of the copied streams, published as the run's origin.
     private func copyPackets(
         from input: DemuxInput, to output: MuxOutput, mapping: [Int], videoIndex: Int,
-        filters: [Int: FFBitstreamFilter], reencoder: AudioReencoder?, sealer: FragmentSealer, afterWrite: () -> Void
+        filters: [Int: FFBitstreamFilter], reencoder: AudioReencoder?, subtitles: [Int: SubtitleTap],
+        sealer: FragmentSealer, afterWrite: () -> Void
     ) throws {
+        let textTracks = run.subtitles.compactMap(\.webVTT)
         let reading = try FFPacket()
         let filtered = try FFPacket()
         defer { withExtendedLifetime((reading, filtered)) {} }
@@ -515,7 +548,10 @@ struct Remuxer: Sendable {
                 return
             }
             let base = inStream.pointee.time_base
-            if inIndex == videoIndex, packet.pointee.pts != FF.noPTS { videoSeconds = Double(packet.pointee.pts) * av_q2d(base) }
+            if inIndex == videoIndex, packet.pointee.pts != FF.noPTS {
+                videoSeconds = Double(packet.pointee.pts) * av_q2d(base)
+                for track in textTracks { track.readThrough(videoSeconds) }
+            }
             av_packet_rescale_ts(packet, base, outStream.pointee.time_base)
             packet.pointee.stream_index = Int32(mapping[inIndex])
             packet.pointee.pos = -1
@@ -553,6 +589,7 @@ struct Remuxer: Sendable {
             let movieTime = Double(origin.ticks) * av_q2d(origin.base)
                 - (containerStart != FF.noPTS ? Double(containerStart) / Double(FF.timeBase) : 0)
             run.setOrigin(movieTime)
+            for track in textTracks { track.setOrigin(movieTime) }
             emit(.timeline(origin: movieTime))
             let released = held
             held.removeAll()
@@ -587,6 +624,11 @@ struct Remuxer: Sendable {
             }
 
             let inIndex = Int(packet.pointee.stream_index)
+            if let tap = subtitles[inIndex] {
+                tap.read(packet)
+                av_packet_unref(packet)
+                continue
+            }
             guard copied.contains(inIndex) else {
                 av_packet_unref(packet)
                 continue
@@ -610,8 +652,85 @@ struct Remuxer: Sendable {
         if shifts == nil, !held.isEmpty { try release() }
         let trailer = av_write_trailer(output.context)
         guard trailer >= 0 else { throw VideoEngineError.writeFailed(code: trailer) }
+        for tap in subtitles.values { tap.finish() }
+        for track in textTracks { track.finish(duration: videoSeconds) }
         noteFirstSegment()
         afterWrite()
+    }
+
+    /// A source subtitle stream, decoded as it is read into the run's track for it.
+    struct SubtitleTap {
+        let decoder: SubtitleDecoder
+        let stream: RemuxSubtitle
+
+        func read(_ packet: UnsafeMutablePointer<AVPacket>) {
+            let decoded = decoder.decode(packet)
+            if !decoded.cues.isEmpty { stream.webVTT?.add(contentsOf: decoded.cues) }
+            for bitmap in decoded.bitmaps { stream.overlay?.add(bitmap) }
+        }
+
+        func finish() {
+            for bitmap in decoder.finish() { stream.overlay?.add(bitmap) }
+        }
+    }
+
+    /// Opens a decoder for each subtitle stream of the source and publishes every subtitle the run offers,
+    /// sidecars included. Subtitles are read, never muxed: AVPlayer takes text as WebVTT renditions and has
+    /// no picture subtitle format for HLS. A stream FFmpeg cannot decode is left out.
+    private func tapSubtitles(of format: UnsafeMutablePointer<AVFormatContext>, targetDuration: Int) -> [Int: SubtitleTap] {
+        let containerStart = format.pointee.start_time
+        let start = containerStart != FF.noPTS ? Double(containerStart) / Double(FF.timeBase) : 0
+        var taps: [Int: SubtitleTap] = [:]
+        var offered: [RemuxSubtitle] = []
+        var names = Set<String>()
+        // NAME must be unique within the rendition group.
+        func unique(_ name: String) -> String {
+            var candidate = name
+            var n = 2
+            while !names.insert(candidate).inserted {
+                candidate = "\(name) \(n)"
+                n += 1
+            }
+            return candidate
+        }
+        for i in 0..<Int(format.pointee.nb_streams) {
+            guard let stream = format.pointee.streams[i],
+                  stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_SUBTITLE else { continue }
+            let decoder: SubtitleDecoder
+            do {
+                decoder = try SubtitleDecoder(stream: stream, startTime: start)
+            } catch {
+                logger.event("subtitle-skipped", [("stream", String(i)), ("error", error.localizedDescription)])
+                continue
+            }
+            let disposition = stream.pointee.disposition
+            let language = SubtitleLanguage.tag(MediaInfo.tag("language", in: stream.pointee.metadata))
+            let title = MediaInfo.tag("title", in: stream.pointee.metadata)
+            var info = RemuxSubtitle(
+                streamIndex: i, name: unique(title ?? SubtitleLanguage.displayName(language) ?? "Subtitles \(offered.count + 1)"),
+                language: language, isDefault: disposition & FF.dispositionDefault != 0,
+                isForced: disposition & FF.dispositionForced != 0,
+                isHearingImpaired: disposition & FF.dispositionHearingImpaired != 0
+            )
+            if decoder.isBitmap {
+                info.overlay = SubtitleOverlayTrack()
+            } else {
+                info.webVTT = SubtitleTrack(targetDuration: targetDuration)
+            }
+            taps[i] = SubtitleTap(decoder: decoder, stream: info)
+            offered.append(info)
+        }
+        for sidecar in options.sidecarSubtitles {
+            let track = SubtitleTrack(targetDuration: targetDuration)
+            track.add(contentsOf: sidecar.cues)
+            offered.append(RemuxSubtitle(
+                streamIndex: nil, name: unique(sidecar.name), language: SubtitleLanguage.tag(sidecar.language),
+                isDefault: sidecar.isDefault, isForced: sidecar.isForced, isHearingImpaired: sidecar.isHearingImpaired,
+                webVTT: track
+            ))
+        }
+        run.setSubtitles(offered)
+        return taps
     }
 
     private static func timestamp(of packet: UnsafeMutablePointer<AVPacket>) -> Int64? {

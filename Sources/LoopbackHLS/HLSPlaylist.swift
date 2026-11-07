@@ -103,6 +103,8 @@ public struct HLSVariant: Sendable, Equatable {
     public var resolution: HLSResolution?
     public var frameRate: Double?
     public var videoRange: HLSVideoRange?
+    /// GROUP-ID of the subtitle renditions; the multivariant playlist sets it when it has any.
+    public var subtitlesGroup: String?
 
     public init(uri: String, bandwidth: Int, averageBandwidth: Int? = nil, codecs: [String] = [],
                 supplementalCodecs: [String] = [], resolution: HLSResolution? = nil,
@@ -127,6 +129,7 @@ public struct HLSVariant: Sendable, Equatable {
         }
         if let resolution { attributes.append("RESOLUTION=\(resolution.width)x\(resolution.height)") }
         if let frameRate { attributes.append(String(format: "FRAME-RATE=%.3f", frameRate)) }
+        if let subtitlesGroup { attributes.append("SUBTITLES=\"\(subtitlesGroup)\"") }
         return "#EXT-X-STREAM-INF:" + attributes.joined(separator: ",")
     }
 }
@@ -135,20 +138,63 @@ public struct HLSVariant: Sendable, Equatable {
 /// decoder and display mode, which is how HDR10, HLG and Dolby Vision reach the screen as such.
 public struct HLSMultivariantPlaylist: Sendable, Equatable {
     public var variants: [HLSVariant]
+    public var subtitles: [HLSSubtitleRendition]
     /// Writes `EXT-X-INDEPENDENT-SEGMENTS`: every segment of every variant starts with a keyframe.
     public var independentSegments = true
 
-    public init(variants: [HLSVariant]) {
+    public init(variants: [HLSVariant], subtitles: [HLSSubtitleRendition] = []) {
         self.variants = variants
+        self.subtitles = subtitles
     }
 
     public func render() -> String {
         var lines = ["#EXTM3U", "#EXT-X-VERSION:7"]
         if independentSegments { lines.append("#EXT-X-INDEPENDENT-SEGMENTS") }
-        for variant in variants {
+        lines += subtitles.map(\.tag)
+        for var variant in variants {
+            if let group = subtitles.first?.groupID { variant.subtitlesGroup = group }
             lines.append(variant.tag)
             lines.append(variant.uri)
         }
         return lines.joined(separator: "\n") + "\n"
+    }
+}
+
+/// One `EXT-X-MEDIA:TYPE=SUBTITLES` entry. AVPlayer offers it in the legible media selection group under
+/// `name`, which stays the same across runs so a selection can be restored after a seek restarts the run.
+public struct HLSSubtitleRendition: Sendable, Equatable {
+    public var groupID: String
+    public var name: String
+    /// BCP-47; "und" when unknown.
+    public var language: String
+    public var uri: String
+    public var isDefault: Bool
+    public var autoselect: Bool
+    public var forced: Bool
+    /// Such as "public.accessibility.transcribes-spoken-dialog" for SDH.
+    public var characteristics: [String]
+
+    public init(groupID: String = "subs", name: String, language: String, uri: String, isDefault: Bool = false,
+                autoselect: Bool = true, forced: Bool = false, characteristics: [String] = []) {
+        self.groupID = groupID
+        self.name = name
+        self.language = language
+        self.uri = uri
+        self.isDefault = isDefault
+        self.autoselect = autoselect
+        self.forced = forced
+        self.characteristics = characteristics
+    }
+
+    var tag: String {
+        func quoted(_ value: String) -> String { "\"" + value.replacingOccurrences(of: "\"", with: "'") + "\"" }
+        var attributes = [
+            "TYPE=SUBTITLES", "GROUP-ID=\(quoted(groupID))", "NAME=\(quoted(name))", "LANGUAGE=\(quoted(language))",
+            "DEFAULT=\(isDefault ? "YES" : "NO")", "AUTOSELECT=\(autoselect || forced ? "YES" : "NO")",
+            "FORCED=\(forced ? "YES" : "NO")",
+        ]
+        if !characteristics.isEmpty { attributes.append("CHARACTERISTICS=\(quoted(characteristics.joined(separator: ",")))") }
+        attributes.append("URI=\(quoted(uri))")
+        return "#EXT-X-MEDIA:" + attributes.joined(separator: ",")
     }
 }

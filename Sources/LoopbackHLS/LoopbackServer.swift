@@ -28,6 +28,8 @@ public final class LoopbackServer: Sendable {
     }
 
     private let routes: [String: LoopbackRoute.Content]
+    /// Routes whose path ends in "/", matched by prefix after the exact routes.
+    private let prefixRoutes: [(path: String, content: LoopbackRoute.Content)]
     private let waitTimeout: TimeInterval
     private let queue: DispatchQueue
     private let changes = ChangeSignal()
@@ -36,8 +38,9 @@ public final class LoopbackServer: Sendable {
     /// - Parameter waitTimeout: how long a request waits for a playlist or for bytes not yet written.
     public init(routes: [LoopbackRoute], queueLabel: String = "loopback-hls", waitTimeout: TimeInterval = 15) {
         var table: [String: LoopbackRoute.Content] = [:]
-        for route in routes { table[route.path] = route.content }
+        for route in routes where !route.path.hasSuffix("/") { table[route.path] = route.content }
         self.routes = table
+        prefixRoutes = routes.filter { $0.path.hasSuffix("/") }.map { ($0.path, $0.content) }
         self.waitTimeout = waitTimeout
         queue = DispatchQueue(label: queueLabel, qos: .userInitiated, attributes: .concurrent)
     }
@@ -134,7 +137,7 @@ public final class LoopbackServer: Sendable {
             .map { String($0.dropFirst("range:".count)) }
         let request = Request(connection: connection, path: path, headOnly: method == "HEAD", range: range)
 
-        switch routes[path] {
+        switch routes[path] ?? prefixRoutes.first(where: { path.hasPrefix($0.path) })?.content {
         case .playlist(let produce)?:
             servePlaylist(request, produce: produce)
         case .growingFile(let url, let availableBytes, let isComplete, let contentType)?:
@@ -142,6 +145,12 @@ public final class LoopbackServer: Sendable {
                              contentType: contentType)
         case .data(let body, let contentType)?:
             serveData(request, body: body, contentType: contentType)
+        case .generated(let make)?:
+            if let generated = make(path) {
+                serveData(request, body: generated.body, contentType: generated.contentType)
+            } else {
+                reply(request, status: 404, note: "")
+            }
         case nil:
             reply(request, status: 404, note: "")
         }

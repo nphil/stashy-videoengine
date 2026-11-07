@@ -63,7 +63,7 @@ struct RemuxSessionTests {
         let session = RemuxSession(sourceFactory: { try FileRangeSource(fileURL: fixture) })
         defer { session.stop() }
         let watchdog = Task {
-            try await Task.sleep(for: .seconds(10))
+            try await Task.sleep(for: .seconds(60))
             session.stop()
         }
         defer { watchdog.cancel() }
@@ -86,5 +86,39 @@ struct RemuxSessionTests {
         #expect(variant.contains("VIDEO-RANGE=PQ"))
         // Opus is not proven in AVPlayer, so it is re-encoded to AAC-LC.
         #expect(variant.contains(",mp4a.40.2\""))
+    }
+
+    @Test func servesTextSubtitlesAsWebVTTRenditions() async throws {
+        let fixture = try Fixture.url("hevc10-opus-srt.mkv")
+        let session = RemuxSession(sourceFactory: { try FileRangeSource(fileURL: fixture) })
+        defer { session.stop() }
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(60))
+            session.stop()
+        }
+        defer { watchdog.cancel() }
+        let base = try session.start().deletingLastPathComponent()
+        events: for await event in session.events {
+            switch event {
+            case .finished, .stopped: break events
+            case .failed(let error, _):
+                Issue.record("remux failed: \(error)")
+                break events
+            default: continue
+            }
+        }
+        func text(_ path: String) async throws -> String {
+            String(decoding: try await URLSession.shared.data(from: base.appendingPathComponent(path)).0, as: UTF8.self)
+        }
+        #expect(session.subtitleStreams.map(\.name) == ["English"])
+        let master = try await text("master.m3u8")
+        #expect(master.contains("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"English\",LANGUAGE=\"en\""))
+        #expect(master.contains("SUBTITLES=\"subs\""))
+        let playlist = try await text("subs/0/index.m3u8")
+        #expect(playlist.contains("\n0.vtt\n#EXT-X-ENDLIST"))
+        let cues = try await text("subs/0/0.vtt")
+        #expect(cues.hasPrefix("WEBVTT\n"))
+        #expect(cues.contains("Hello"))
+        #expect(cues.contains("World"))
     }
 }

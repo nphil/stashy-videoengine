@@ -26,6 +26,8 @@ public struct RemuxOptions: Sendable {
     public var dolbyVisionFallback: DolbyVisionConfiguration?
     /// The audio stream to play and which codecs are copied rather than re-encoded to AAC.
     public var audio = AudioPolicy()
+    /// Sidecar text subtitles (read with `SubtitleFile.read`), offered next to the source's own.
+    public var sidecarSubtitles: [SidecarSubtitles] = []
     /// MP4 muxer options; they override the run's own (`strict`, `use_editlist`).
     public var muxerOptions: [String: String] = [:]
     /// Added to the run's movflags: `frag_keyframe+empty_moov+default_base_moof`, with `delay_moov` when

@@ -71,6 +71,12 @@ public final class RemuxSession: Sendable {
         state.withLock { $0.active?.run }?.origin
     }
 
+    /// The current run's subtitles, once the source is open: text ones are renditions of the multivariant
+    /// playlist that AVPlayer offers by name; picture ones carry an overlay track for the app to draw.
+    public var subtitleStreams: [RemuxSubtitle] {
+        state.withLock { $0.active?.run }?.subtitles ?? []
+    }
+
     /// Starts the first run and returns its playlist URL; returns the current URL when a run exists.
     /// Throws `CancellationError` after `stop()`.
     public func start(at time: TimeInterval = 0) throws -> URL {
@@ -119,6 +125,7 @@ public final class RemuxSession: Sendable {
         let server = LoopbackServer(routes: [
             LoopbackRoute(path: "/master.m3u8", .playlist({ run.multivariantPlaylist() })),
             LoopbackRoute(path: "/index.m3u8", .playlist({ run.playlist() })),
+            LoopbackRoute(path: "/subs/", .generated({ run.subtitleResponse($0) })),
             LoopbackRoute(path: "/media.mp4", .growingFile(
                 fileURL, availableBytes: { run.bytesWritten }, isComplete: { run.isComplete }, contentType: "video/mp4"
             )),
