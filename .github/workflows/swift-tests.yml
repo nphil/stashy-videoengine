@@ -71,8 +71,10 @@ jobs:
 
       - name: Build VideoEngine and LoopbackHLS for iOS
         run: |
-          # The package scheme builds every target, LoopbackHLS and VideoEngine included.
-          xcodebuild build -scheme StashyVideoEngine -destination "generic/platform=iOS" \
+          # Xcode 26 lists one scheme per package product; building the VideoEngine
+          # product covers LoopbackHLS, which it contains.
+          xcodebuild -list
+          xcodebuild build -scheme VideoEngine -destination "generic/platform=iOS" \
             -derivedDataPath build/DD CODE_SIGNING_ALLOWED=NO
 
   stashy:
