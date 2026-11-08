@@ -71,11 +71,20 @@ jobs:
 
       - name: Build VideoEngine and LoopbackHLS for iOS
         run: |
-          # Fetch the binary targets first: with none on disk Xcode 26 sees the
-          # package schemes as having no supported platforms and rejects them.
-          swift package resolve
-          xcodebuild build -scheme VideoEngine -destination "generic/platform=iOS" \
-            -derivedDataPath build/DD CODE_SIGNING_ALLOWED=NO
+          # Xcode 26 intermittently rejects the package's schemes on first contact
+          # ("does not contain a scheme"); a later attempt in the same checkout
+          # finds them, so retry the resolve and build.
+          for attempt in 1 2 3 4; do
+            xcodebuild -resolvePackageDependencies -scheme VideoEngine -derivedDataPath build/DD || true
+            if xcodebuild build -scheme VideoEngine -destination "generic/platform=iOS" \
+                 -derivedDataPath build/DD CODE_SIGNING_ALLOWED=NO > build.log 2>&1; then
+              tail -3 build.log
+              exit 0
+            fi
+            grep -q "does not contain a scheme" build.log || { tail -80 build.log; exit 1; }
+            echo "scheme not found (attempt $attempt of 4)"
+          done
+          exit 1
 
   stashy:
     needs: test
