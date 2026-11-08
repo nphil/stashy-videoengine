@@ -71,7 +71,9 @@ jobs:
 
       - name: Build VideoEngine and LoopbackHLS for iOS
         run: |
-          xcodebuild -resolvePackageDependencies -scheme VideoEngine -derivedDataPath build/DD
+          # Fetch the binary targets first: with none on disk Xcode 26 sees the
+          # package schemes as having no supported platforms and rejects them.
+          swift package resolve
           xcodebuild build -scheme VideoEngine -destination "generic/platform=iOS" \
             -derivedDataPath build/DD CODE_SIGNING_ALLOWED=NO
 
