@@ -71,10 +71,9 @@ jobs:
 
       - name: Build VideoEngine and LoopbackHLS for iOS
         run: |
-          for t in LoopbackHLS VideoEngine; do
-            xcodebuild build -scheme "$t" -destination "generic/platform=iOS" \
-              -derivedDataPath build/DD CODE_SIGNING_ALLOWED=NO
-          done
+          # The package scheme builds every target, LoopbackHLS and VideoEngine included.
+          xcodebuild build -scheme StashyVideoEngine -destination "generic/platform=iOS" \
+            -derivedDataPath build/DD CODE_SIGNING_ALLOWED=NO
 
   stashy:
     needs: test
