@@ -56,6 +56,26 @@ jobs:
       - name: Swift tests
         run: bash scripts/swift-test.sh
 
+  xcode26:
+    name: Targets build on Xcode 26 (macOS)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select the newest Xcode 26
+        run: |
+          X=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          sudo xcode-select -s "$X"
+          xcodebuild -version
+
+      - name: Build VideoEngine and LoopbackHLS for iOS
+        run: |
+          for t in LoopbackHLS VideoEngine; do
+            xcodebuild build -scheme "$t" -destination "generic/platform=iOS" \
+              -derivedDataPath build/DD CODE_SIGNING_ALLOWED=NO
+          done
+
   stashy:
     needs: test
     if: inputs.release_tag != ''
