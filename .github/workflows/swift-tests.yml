@@ -71,11 +71,11 @@ jobs:
 
       - name: Build VideoEngine and LoopbackHLS for iOS
         run: |
-          xcodebuild -resolvePackageDependencies
-          xcodebuild -list
-          # The package scheme builds every target, LoopbackHLS and VideoEngine included.
-          xcodebuild build -scheme StashyVideoEngine-Package -destination "generic/platform=iOS" \
-            -derivedDataPath build/DD CODE_SIGNING_ALLOWED=NO
+          # xcodebuild on Xcode 26 cannot find the package's schemes it lists, so
+          # SwiftPM builds both targets against the iOS SDK directly.
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          swift build --target LoopbackHLS --triple arm64-apple-ios17.0 --sdk "$SDK"
+          swift build --target VideoEngine --triple arm64-apple-ios17.0 --sdk "$SDK"
 
   stashy:
     needs: test
