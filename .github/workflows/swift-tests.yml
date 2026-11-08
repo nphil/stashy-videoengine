@@ -71,7 +71,7 @@ jobs:
 
       - name: Build VideoEngine and LoopbackHLS for iOS
         run: |
-          xcodebuild -resolvePackageDependencies -derivedDataPath build/DD
+          xcodebuild -resolvePackageDependencies
           xcodebuild -list
           # The package scheme builds every target, LoopbackHLS and VideoEngine included.
           xcodebuild build -scheme StashyVideoEngine-Package -destination "generic/platform=iOS" \
