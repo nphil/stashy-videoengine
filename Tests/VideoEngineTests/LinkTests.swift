@@ -51,14 +51,14 @@ struct LinkTests {
             downAt = .now
             server.setDown(true)
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
-                if source.isReconnecting { sawReconnecting.withLock { $0 = true } }
+                if source.isReconnecting, source.isFetching { sawReconnecting.withLock { $0 = true } }
             }
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.6) { server.setDown(false) }
         }
         let elapsed = Self.seconds(since: start)
         #expect(read == Self.body)
         #expect(sawReconnecting.withLock { $0 })
-        #expect(!source.isReconnecting)
+        #expect(!source.isReconnecting && !source.isFetching)
         // Wall-clock bounds only: the CI simulator can freeze the test process for seconds at a time.
         #expect(source.outageSeconds > 0 && source.outageSeconds < elapsed, "waited \(source.outageSeconds) s of \(elapsed) s")
         print(String(format: "link: 0.6 s outage: reads waited %.2f s for the link", source.outageSeconds))

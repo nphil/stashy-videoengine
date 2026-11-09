@@ -63,12 +63,16 @@ public struct RemuxProgress: Sendable, Equatable {
     public var sourceBytesPerSecond: Double?
     /// The source's time to first byte (`ByteRangeSource.latency`); nil for a local file.
     public var sourceLatency: TimeInterval?
+    /// True while the run waits on its source (`ByteRangeSource.isFetching`). A player waiting on a run
+    /// whose output stays put while this is false waits on something that will not come.
+    public var isFetching: Bool
     /// True while the source waits for the link to come back (`ByteRangeSource.isReconnecting`).
     public var isReconnecting: Bool
 
     public init(
         bytesWritten: Int64 = 0, mediaSeconds: TimeInterval = 0, packets: Int = 0, isPaced: Bool = false,
-        sourceBytesPerSecond: Double? = nil, sourceLatency: TimeInterval? = nil, isReconnecting: Bool = false
+        sourceBytesPerSecond: Double? = nil, sourceLatency: TimeInterval? = nil, isFetching: Bool = false,
+        isReconnecting: Bool = false
     ) {
         self.bytesWritten = bytesWritten
         self.mediaSeconds = mediaSeconds
@@ -76,6 +80,7 @@ public struct RemuxProgress: Sendable, Equatable {
         self.isPaced = isPaced
         self.sourceBytesPerSecond = sourceBytesPerSecond
         self.sourceLatency = sourceLatency
+        self.isFetching = isFetching
         self.isReconnecting = isReconnecting
     }
 }

@@ -44,6 +44,7 @@ final class RemuxRun: Sendable {
         var current = progress
         current.sourceBytesPerSecond = source?.bytesPerSecond
         current.sourceLatency = source?.latency
+        current.isFetching = source?.isFetching ?? false
         current.isReconnecting = source?.isReconnecting ?? false
         return current
     }

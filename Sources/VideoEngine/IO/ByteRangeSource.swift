@@ -20,6 +20,9 @@ public protocol ByteRangeSource: Sendable {
     /// Time to the first byte of a request on a good recent one; nil for a local file or before the first
     /// bytes.
     var latency: TimeInterval? { get }
+    /// True while a read is under way, which over a network means it waits for bytes or for the link. A run
+    /// whose output does not grow while its source is not fetching waits on nothing.
+    var isFetching: Bool { get }
     /// True while a read waits to retry after the link failed.
     var isReconnecting: Bool { get }
     /// Total seconds reads have spent waiting for the link to come back. The run's stall deadline moves
@@ -30,6 +33,7 @@ public protocol ByteRangeSource: Sendable {
 extension ByteRangeSource {
     public var bytesPerSecond: Double? { nil }
     public var latency: TimeInterval? { nil }
+    public var isFetching: Bool { false }
     public var isReconnecting: Bool { false }
     public var outageSeconds: TimeInterval { 0 }
 }

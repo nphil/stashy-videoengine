@@ -40,6 +40,9 @@ never opens a network URL itself.
   requests stay cached. `bytesPerSecond`, `latency` (shortest recent time to
   the first byte), `isReconnecting` and `outageSeconds` describe the link
   (`RemuxProgress.sourceBytesPerSecond`, `sourceLatency`, `isReconnecting`).
+  `isFetching` (`RemuxProgress.isFetching`) is true while a read is under way:
+  a player waiting on a run whose output stays put while it is false waits on
+  nothing, which an app can treat as stuck at once rather than after a timer.
 - `FileRangeSource(fileURL:)` reads local files.
 - `ByteRangeSources.make(for:headers:readAheadBytes:)` picks one by scheme.
 

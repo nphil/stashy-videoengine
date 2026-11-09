@@ -48,6 +48,8 @@ public final class HTTPRangeSource: ByteRangeSource {
         var size: Int64?
         var sizeQueried = false
         var cancelled = false
+        /// Reads under way.
+        var reading = 0
         /// Reads waiting to retry after a failure.
         var reconnecting = 0
         var outageSeconds: TimeInterval = 0
@@ -92,6 +94,8 @@ public final class HTTPRangeSource: ByteRangeSource {
 
     public var latency: TimeInterval? { meter.latency() }
 
+    public var isFetching: Bool { state.withLockUnchecked { $0.reading > 0 } }
+
     public var isReconnecting: Bool { state.withLockUnchecked { $0.reconnecting > 0 } }
 
     public var outageSeconds: TimeInterval { state.withLockUnchecked { $0.outageSeconds } }
@@ -114,12 +118,14 @@ public final class HTTPRangeSource: ByteRangeSource {
         guard buffer.count > 0 else { return 0 }
         var failedAt: UInt64?
         var failures = 0
+        state.withLockUnchecked { $0.reading += 1 }
         defer {
-            if let failedAt {
-                let seconds = Double(DispatchTime.now().uptimeNanoseconds - failedAt) / 1e9
-                state.withLockUnchecked { s in
+            let outage = failedAt.map { Double(DispatchTime.now().uptimeNanoseconds - $0) / 1e9 }
+            state.withLockUnchecked { s in
+                s.reading -= 1
+                if let outage {
                     s.reconnecting -= 1
-                    s.outageSeconds += seconds
+                    s.outageSeconds += outage
                 }
             }
         }
