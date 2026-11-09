@@ -71,7 +71,7 @@ struct HTTPRangeSourceTests {
 
     @Test func knownLengthNeedsNoRequest() throws {
         // Nothing listens on the discard port, so a request would fail the call.
-        let source = HTTPRangeSource(url: URL(string: "http://127.0.0.1:9/video.mkv")!, knownLength: 1234, maxAttempts: 1)
+        let source = HTTPRangeSource(url: URL(string: "http://127.0.0.1:9/video.mkv")!, knownLength: 1234, retryWindow: 0)
         #expect(try source.length() == 1234)
     }
 

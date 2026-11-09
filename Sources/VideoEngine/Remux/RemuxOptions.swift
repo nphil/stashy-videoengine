@@ -34,7 +34,8 @@ public struct RemuxOptions: Sendable {
     /// AC-3 or E-AC-3 is copied and `write_colr` for Dolby Vision profile 5.
     public var extraMovflags: [String] = []
     public var ioBufferBytes = 256 << 10
-    /// How far production may run ahead of the playhead before it waits.
+    /// How far production may run ahead of the playhead before it waits; twice this over a far or narrow
+    /// link (`PaceGate`).
     public var paceLeadSeconds: TimeInterval = 75
     /// Smaller sources are remuxed to the end without pacing, so scrubbing never waits on them.
     public var paceMinSourceBytes: Int64 = 200 << 20
@@ -60,16 +61,22 @@ public struct RemuxProgress: Sendable, Equatable {
     public var isPaced: Bool
     /// The source's recent download rate (`ByteRangeSource.bytesPerSecond`); nil for a local file.
     public var sourceBytesPerSecond: Double?
+    /// The source's time to first byte (`ByteRangeSource.latency`); nil for a local file.
+    public var sourceLatency: TimeInterval?
+    /// True while the source waits for the link to come back (`ByteRangeSource.isReconnecting`).
+    public var isReconnecting: Bool
 
     public init(
         bytesWritten: Int64 = 0, mediaSeconds: TimeInterval = 0, packets: Int = 0, isPaced: Bool = false,
-        sourceBytesPerSecond: Double? = nil
+        sourceBytesPerSecond: Double? = nil, sourceLatency: TimeInterval? = nil, isReconnecting: Bool = false
     ) {
         self.bytesWritten = bytesWritten
         self.mediaSeconds = mediaSeconds
         self.packets = packets
         self.isPaced = isPaced
         self.sourceBytesPerSecond = sourceBytesPerSecond
+        self.sourceLatency = sourceLatency
+        self.isReconnecting = isReconnecting
     }
 }
 

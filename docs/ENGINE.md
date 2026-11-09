@@ -23,17 +23,23 @@ in the engine is `@MainActor`, and no call blocks the caller's thread.
 `ByteRangeSource` is what FFmpeg reads through a custom `AVIOContext`; FFmpeg
 never opens a network URL itself.
 
-- `HTTPRangeSource(url:headers:knownLength:readAheadBytes:requestTimeout:maxAttempts:)`
+- `HTTPRangeSource(url:headers:knownLength:readAheadBytes:requestTimeout:retryWindow:)`
   sends credentials as headers (`X-Plex-Token`, `ApiKey`), never in the URL.
   A reply counts only when it is 206 with a matching `Content-Range` (or 200
-  from offset 0); a dropped connection is retried, then reported as an error,
-  never as the end of the file. `knownLength` (Plex `Part.size`) saves the
-  size lookup. A read no request covers starts a 512 KiB request, so the
-  header, the index at the end and the resume point each cost one round trip;
-  a sequential run doubles each request up to `readAheadBytes` and keeps two
-  in flight. Reads return as bytes arrive, recent requests stay cached, and
-  `bytesPerSecond` reports the measured link rate
-  (`RemuxProgress.sourceBytesPerSecond`).
+  from offset 0). A failed request is retried, 0.25 s apart doubling to 2 s,
+  until `retryWindow` (30 s) has passed since the first failure, then reported
+  as an error, never as the end of the file; the remux's stall timeout does
+  not count that wait. A change of network (Wi-Fi to cellular, a VPN coming
+  up) ends the requests in flight at once instead of leaving them hung until
+  `requestTimeout`. `knownLength` (Plex `Part.size`) saves the size lookup. A
+  read no request covers starts a 512 KiB request, so the header, the index
+  at the end and the resume point each cost one round trip; a sequential run
+  doubles each request up to `readAheadBytes` and keeps two in flight, three
+  from 50 ms to the first byte and four from 150 ms, since one connection
+  carries less over a far link. Reads return as bytes arrive and recent
+  requests stay cached. `bytesPerSecond`, `latency` (shortest recent time to
+  the first byte), `isReconnecting` and `outageSeconds` describe the link
+  (`RemuxProgress.sourceBytesPerSecond`, `sourceLatency`, `isReconnecting`).
 - `FileRangeSource(fileURL:)` reads local files.
 - `ByteRangeSources.make(for:headers:readAheadBytes:)` picks one by scheme.
 
@@ -56,6 +62,7 @@ let session = RemuxSession(
 let url = try await session.start(at: resumeTime)   // master.m3u8
 for await event in session.events { … }            // opened, headerWritten, timeline, progress, finished, failed, stopped
 session.updatePlayhead(item.currentTime().seconds)   // paces production
+session.setPlayerWaiting(player.timeControlStatus == .waitingToPlayAtSpecifiedRate)
 let seekURL = try await session.seek(to: target)     // a new run; replace the item
 session.stop()
 ```
@@ -98,9 +105,16 @@ session.stop()
   `session.subtitleStreams[i].overlay?.bitmaps(at: movieTime)`.
   `SubtitleFile.read(fileURL:forcedOnly:)` reads sidecar files (.srt, .vtt,
   .ass, .smi, .sup).
-- **Pacing.** Production pauses `paceLeadSeconds` ahead of the playhead for
-  sources above `paceMinSourceBytes`. The remux thread runs at
-  user-initiated until a segment is listed and 8 s are ready, then at utility.
+- **Pacing.** For sources above `paceMinSourceBytes`, production runs up to
+  `paceLeadSeconds` ahead of the playhead (twice that from 100 ms to the
+  first byte, or with less than twice the media's rate to spare), then keeps
+  step with the playhead, one target duration ahead, instead of waiting for
+  it to catch up: AVPlayer stops loading the listed segments of a live
+  playlist that has not grown for 1.5 target durations, so a playlist held
+  still starves it. A playhead that moves back starts the step again from
+  there, and production runs on while `setPlayerWaiting(true)` says the
+  player waits for data. The remux thread runs at user-initiated until a
+  segment is listed and 8 s are ready, then at utility.
 - `RemuxSession.sweepStaleFiles(in:prefixes:)` removes temp files a killed
   process left behind; call it at launch.
 

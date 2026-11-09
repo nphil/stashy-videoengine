@@ -32,7 +32,7 @@ final class FakeHTTP: URLProtocol, @unchecked Sendable {
     private static let responders = OSAllocatedUnfairLock(initialState: [String: Responder]())
 
     /// A source for a fresh host answered by `responder`.
-    static func source(maxAttempts: Int = 1, readAheadBytes: Int = 0, _ responder: @escaping Responder) -> HTTPRangeSource {
+    static func source(retryWindow: TimeInterval = 0, readAheadBytes: Int = 0, _ responder: @escaping Responder) -> HTTPRangeSource {
         let host = "fake-\(UUID().uuidString.lowercased()).test"
         responders.withLock { $0[host] = responder }
         let configuration = URLSessionConfiguration.ephemeral
@@ -41,7 +41,7 @@ final class FakeHTTP: URLProtocol, @unchecked Sendable {
         // simulator that freezes the test process for seconds at a time.
         return HTTPRangeSource(
             url: URL(string: "http://\(host)/video.mkv")!, readAheadBytes: readAheadBytes, requestTimeout: 60,
-            maxAttempts: maxAttempts, configuration: configuration
+            retryWindow: retryWindow, configuration: configuration
         )
     }
 

@@ -10,6 +10,7 @@ final class RemuxRun: Sendable {
     private struct State: Sendable {
         var progress = RemuxProgress()
         var playhead: TimeInterval = 0
+        var playerWaiting = false
         var sourceSize: Int64?
         var complete = false
         var terminalSent = false
@@ -42,11 +43,14 @@ final class RemuxRun: Sendable {
         let (progress, source) = state.withLock { ($0.progress, $0.source) }
         var current = progress
         current.sourceBytesPerSecond = source?.bytesPerSecond
+        current.sourceLatency = source?.latency
+        current.isReconnecting = source?.isReconnecting ?? false
         return current
     }
     var bytesWritten: Int64 { state.withLock { $0.progress.bytesWritten } }
     var isComplete: Bool { state.withLock { $0.complete } }
     var playhead: TimeInterval { state.withLock { $0.playhead } }
+    var playerWaiting: Bool { state.withLock { $0.playerWaiting } }
     var sourceSize: Int64? { state.withLock { $0.sourceSize } }
     var origin: TimeInterval? { state.withLock { $0.origin } }
     var index: FragmentIndex? { state.withLock { $0.index } }
@@ -93,6 +97,14 @@ final class RemuxRun: Sendable {
     }
 
     func setPlayhead(_ seconds: TimeInterval) { state.withLock { $0.playhead = seconds } }
+
+    func setPlayerWaiting(_ waiting: Bool) { state.withLock { $0.playerWaiting = waiting } }
+
+    /// The source's measured link, for the pace lead.
+    var link: (latency: TimeInterval?, bytesPerSecond: Double?) {
+        let source = state.withLock { $0.source }
+        return (source?.latency, source?.bytesPerSecond)
+    }
 
     /// Registers the run's source so `stop()` can cancel a blocked read; cancels it at once if the run
     /// is already stopped.
@@ -621,9 +633,11 @@ struct Remuxer: Sendable {
             if heldStreams == copied || held.count >= Self.heldPacketLimit { try release() }
         }
 
+        var gate = PaceGate(lead: options.paceLeadSeconds, headroom: TimeInterval(sealer.index.targetDuration))
+        let mediaBytesPerSecond = Self.mediaBytesPerSecond(of: input.context, size: run.sourceSize)
         run.control.extendDeadline(by: options.stallTimeout)
         while true {
-            try pace(videoSeconds: videoSeconds)
+            try pace(videoSeconds: videoSeconds, gate: &gate, mediaBytesPerSecond: mediaBytesPerSecond)
             // The viewer waits on the first segments; once one is listed and 8 s are ready, production
             // yields to the interface.
             if !yielded, sawSegment, videoSeconds - run.playhead >= 8 {
@@ -755,19 +769,33 @@ struct Remuxer: Sendable {
         return packet.pointee.pts != FF.noPTS ? packet.pointee.pts : nil
     }
 
-    /// Waits while production is more than `paceLeadSeconds` ahead of the playhead, so a large file is only
-    /// downloaded as far as it is watched. Small sources are never paced.
-    private func pace(videoSeconds: TimeInterval) throws {
+    /// Waits while the gate holds production back, so a large file is only downloaded as far as it is
+    /// watched. Small sources are never paced.
+    private func pace(videoSeconds: TimeInterval, gate: inout PaceGate, mediaBytesPerSecond: Double?) throws {
         if run.control.isStopped { throw CancellationError() }
-        guard let size = run.sourceSize, size >= options.paceMinSourceBytes,
-              videoSeconds - run.playhead > options.paceLeadSeconds else { return }
+        guard let size = run.sourceSize, size >= options.paceMinSourceBytes else { return }
+        if videoSeconds - run.playhead > options.paceLeadSeconds {
+            let link = run.link
+            gate.lead = PaceGate.lead(
+                base: options.paceLeadSeconds, latency: link.latency, bytesPerSecond: link.bytesPerSecond,
+                mediaBytesPerSecond: mediaBytesPerSecond
+            )
+        }
+        guard !gate.allows(produced: videoSeconds, playhead: run.playhead, playerWaiting: run.playerWaiting) else { return }
         run.setPaced(true)
         defer { run.setPaced(false) }
-        while videoSeconds - run.playhead > options.paceLeadSeconds {
+        repeat {
             if run.control.isStopped { throw CancellationError() }
             Thread.sleep(forTimeInterval: 0.2)
-        }
+        } while !gate.allows(produced: videoSeconds, playhead: run.playhead, playerWaiting: run.playerWaiting)
         run.control.extendDeadline(by: options.stallTimeout)
+    }
+
+    /// The source's average rate: the container's bit rate, else its size over its duration.
+    private static func mediaBytesPerSecond(of format: UnsafeMutablePointer<AVFormatContext>, size: Int64?) -> Double? {
+        if format.pointee.bit_rate > 0 { return Double(format.pointee.bit_rate) / 8 }
+        guard let size, format.pointee.duration > 0 else { return nil }
+        return Double(size) / (Double(format.pointee.duration) / Double(FF.timeBase))
     }
 
     private static func name(of event: RemuxEvent) -> String {

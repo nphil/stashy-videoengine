@@ -24,6 +24,7 @@ public final class RemuxSession: Sendable {
     private struct State: Sendable {
         var active: Active?
         var stopped = false
+        var playerWaiting = false
     }
 
     private let continuation: AsyncStream<RemuxEvent>.Continuation
@@ -91,9 +92,19 @@ public final class RemuxSession: Sendable {
     }
 
     /// The player's position on the current run's timeline; production waits once it is
-    /// `paceLeadSeconds` ahead of it.
+    /// `paceLeadSeconds` ahead of it, then keeps step with it.
     public func updatePlayhead(_ seconds: TimeInterval) {
         state.withLock { $0.active?.run }?.setPlayhead(seconds)
+    }
+
+    /// Whether the player is waiting for data (`AVPlayer.timeControlStatus` is
+    /// `.waitingToPlayAtSpecifiedRate`). Production never waits for the playhead while the player waits for
+    /// production. Carries over to later runs.
+    public func setPlayerWaiting(_ waiting: Bool) {
+        state.withLock { state in
+            state.playerWaiting = waiting
+            state.active?.run.setPlayerWaiting(waiting)
+        }
     }
 
     /// Ends the current run, deletes its file and finishes `events`. Idempotent.
@@ -142,6 +153,7 @@ public final class RemuxSession: Sendable {
             if state.stopped { return (false, nil, nil) }
             if !replacingCurrent, let current = state.active { return (false, nil, current.url) }
             defer { state.active = active }
+            run.setPlayerWaiting(state.playerWaiting)
             return (true, state.active, nil)
         }
         guard swap.accepted else {

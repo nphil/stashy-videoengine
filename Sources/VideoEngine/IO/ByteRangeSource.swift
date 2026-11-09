@@ -17,10 +17,21 @@ public protocol ByteRangeSource: Sendable {
     /// Recent download rate over the network, counted only while bytes were being fetched; nil for a
     /// local file or before the first bytes.
     var bytesPerSecond: Double? { get }
+    /// Time to the first byte of a request on a good recent one; nil for a local file or before the first
+    /// bytes.
+    var latency: TimeInterval? { get }
+    /// True while a read waits to retry after the link failed.
+    var isReconnecting: Bool { get }
+    /// Total seconds reads have spent waiting for the link to come back. The run's stall deadline moves
+    /// by the same amount, so a dropout the source rides out does not end the run.
+    var outageSeconds: TimeInterval { get }
 }
 
 extension ByteRangeSource {
     public var bytesPerSecond: Double? { nil }
+    public var latency: TimeInterval? { nil }
+    public var isReconnecting: Bool { false }
+    public var outageSeconds: TimeInterval { 0 }
 }
 
 public enum ByteRangeSources {

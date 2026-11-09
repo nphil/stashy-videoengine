@@ -27,6 +27,11 @@ final class RunControl: Sendable {
         state.withLock { $0.deadline = deadline }
     }
 
+    /// Moves the deadline `seconds` later.
+    func postponeDeadline(by seconds: TimeInterval) {
+        state.withLock { $0.deadline = $0.deadline + seconds }
+    }
+
     var shouldInterrupt: Bool {
         let now = DispatchTime.now()
         return state.withLock { $0.stopped || now > $0.deadline }
@@ -205,7 +210,10 @@ private func readPacket(_ opaque: UnsafeMutableRawPointer?, _ buffer: UnsafeMuta
     // FFmpeg polls the interrupt callback in only a few places when the IO is custom, so reads check it too.
     if input.control.shouldInterrupt { return FF.averrorExit }
     do {
+        let outage = input.source.outageSeconds
         let count = try input.source.read(at: input.position, into: UnsafeMutableRawBufferPointer(start: buffer, count: Int(size)))
+        let waited = input.source.outageSeconds - outage
+        if waited > 0 { input.control.postponeDeadline(by: waited) }
         guard count > 0 else { return FF.averrorEOF }
         input.position += Int64(count)
         return Int32(count)
