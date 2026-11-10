@@ -46,11 +46,11 @@ LIBS=(libavutil libavcodec libavformat libavfilter libswscale libswresample)
 # yadif_videotoolbox needs Metal. There is no tonemap_vt in FFmpeg — software
 # tonemap + zscale cover HDR->SDR. Dead-stripping does not trim the catalogue:
 # FFmpeg's registries reference every enabled component, so an app that links a
-# library carries all of its components (Stashy's IPA grew about 4.4 MB with
-# the switch to this set). Only libraries an app never references drop out.
+# library carries all of its components (one consumer's IPA grew about 4.4 MB
+# with the switch to this set). Only libraries an app never references drop out.
 #
-# Input is only ever a file, a pipe or the app's own AVIOContext (URLSession
-# range requests in Stashy), so the protocols stop at file and pipe, and with
+# Input is only ever a file, a pipe or the app's own AVIOContext (such as
+# URLSession range requests), so the protocols stop at file and pipe, and with
 # them the HTTP client and TLS. --disable-protocols only unsets protocols and
 # the rtsp/rtp/sap/sdp components would select http/tcp/udp back in, hence
 # --disable-network. SecureTransport is autodetected, so it is disabled

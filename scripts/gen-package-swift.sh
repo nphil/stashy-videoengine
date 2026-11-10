@@ -21,7 +21,7 @@
 set -euo pipefail
 
 TAG="${1:-}"
-REPO="${REPO:-nphil/stashy-videoengine}"
+REPO="${REPO:-nphil/videoengine}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCAL="${LOCAL_XCFRAMEWORKS:-0}"
 
@@ -101,7 +101,7 @@ cat <<EOF
 import PackageDescription
 
 let package = Package(
-    name: "StashyVideoEngine",
+    name: "VideoEngine",
     platforms: [.iOS(.v26)],
     products: [
         .library(

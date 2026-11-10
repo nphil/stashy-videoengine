@@ -1,6 +1,6 @@
 # VideoEngine
 
-The Swift layer over the FFmpeg binaries, shared by Stashy and Marquee. One
+The Swift layer over the FFmpeg binaries. One
 library product, `VideoEngine`, with two targets, both Swift 6 with strict
 concurrency, iOS 26 and later:
 
@@ -168,26 +168,23 @@ and report through `TranscodeObserver`.
 
 ## Adoption
 
-### Stashy
+### Integrating into a media app
 
 | Step | Change | Gate |
 |---|---|---|
-| a | `ios/project.yml`: package pinned with `exactVersion`; add `product: VideoEngine` beside `FFmpeg` | CI |
-| b | `ScenePlayerModel`: `localStream` becomes `RemuxSession?`; the pre-remux probe goes; builders use `RemuxSession(sourceFactory:)` with the Stash `ApiKey` header; `OrientationLock` calls `RemuxSession.sweepStaleFiles`; delete `FFmpegRemuxer`, `FFmpegSource`, `FMP4Index`, `LocalRemuxStream`, `LoopbackServer`, `DeviceCapabilities`, `VideoTranscoder` and add the import | device |
-| c | `EngineAdapters.swift`: wrap `FileTranscoder` and `ChunkedTranscoder` as the app's on-device transcoder; forward `EngineLogger` to `RemoteLog.shared`; `DownloadManager` call sites unchanged | device |
-| d, e | drop the `FFmpeg` product and leftover `Libav*` imports; update `CLAUDE.md`, `ENGINEERING_NOTES.md`, `ROADMAP.md` | CI |
+| Package | Pin the package with `exactVersion` in the app's Swift package or XcodeGen configuration; add `VideoEngine` alongside `FFmpeg`. | CI |
+| Playback | Replace app-owned remux, source, fragment index and loopback server implementations with `RemuxSession(sourceFactory:)`. Supply any server authentication headers through the source factory, call `RemuxSession.sweepStaleFiles` at an appropriate lifecycle point, and import the engine. | device |
+| Transcoding | Adapt `FileTranscoder` and `ChunkedTranscoder` to the app's download workflow and forward `EngineLogger` to its logging system. | device |
+| Cleanup | Remove replaced implementations and, if no longer needed, the `FFmpeg` product and remaining `Libav*` imports. Update app documentation. | CI |
 
-Seek handling changes with the timeline contract: after `seek(to:)` the new
-item starts at the run's origin, so the scrubber shows `t + origin`.
-`DeviceCapabilities.av1HardwareDecode` becomes
-`snapshot().decode.av1 == .hardware`.
+After `seek(to:)`, the new item starts at the run's origin, so the scrubber
+shows `t + origin`. Use `snapshot().decode.av1 == .hardware` for the AV1
+hardware decode verdict.
 
-### Marquee (step M)
-
-`product: VideoEngine` with `exactVersion` in its XcodeGen file;
-`HTTPRangeSource` with `X-Plex-Token` as a header and `knownLength` from
-`Part.size`; its own `EngineLogger`; the About screen lists FFmpeg and its
-licence. The Info.plist needs `NSAllowsLocalNetworking` for LAN `http://<ip>:32400`.
+For a remote media server, provide its authentication header to
+`HTTPRangeSource` and a known length when available. Supply an `EngineLogger`,
+list FFmpeg and its licence in the app's About screen, and configure
+`NSAllowsLocalNetworking` when the app needs LAN HTTP access.
 
 ## Device test sheets
 

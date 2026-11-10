@@ -8,8 +8,8 @@ import Libavfilter
 import Libswscale
 import Libswresample
 
-@_cdecl("stashy_swift_import_check")
-func stashySwiftImportCheck() -> Int32 {
+@_cdecl("videoengine_swift_import_check")
+func videoengineSwiftImportCheck() -> Int32 {
     _ = avformat_version()
     _ = swscale_version()
     _ = swresample_version()

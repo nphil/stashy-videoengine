@@ -19,7 +19,7 @@ DIST="$BUILD_DIR/dist"
 SRC_DIR="$ROOT/ffmpeg"
 ARCHIVES="$BUILD_DIR/deps/sources"   # filled by build-deps.sh
 LIC="$BUILD_DIR/licenses/LICENSES"
-REPO="${REPO:-nphil/stashy-videoengine}"
+REPO="${REPO:-nphil/videoengine}"
 RELEASE_TAG="${RELEASE_TAG:-}"
 
 # Every bundled library: display name | licence | licence files in its source.
@@ -67,7 +67,7 @@ log "Source archives"
 FF_ARCHIVE="ffmpeg-$FFMPEG_VERSION.tar.gz"
 git -C "$SRC_DIR" archive --format=tar.gz --prefix="ffmpeg-$FFMPEG_VERSION/" -o "$DIST/$FF_ARCHIVE" HEAD
 {
-  echo "Corresponding source for the stashy-videoengine binaries of $WHERE:"
+  echo "Corresponding source for the videoengine binaries of $WHERE:"
   echo "$WHERE_URL"
   echo "Each archive below is attached there. Build scripts:"
   echo "https://github.com/$REPO/tree/$ENGINE_COMMIT"
@@ -114,9 +114,9 @@ cat "$DIST/BUILDINFO.txt"
 
 log "Licence texts and notice"
 rm -rf "$BUILD_DIR/licenses"
-mkdir -p "$LIC/ffmpeg" "$LIC/stashy-videoengine"
+mkdir -p "$LIC/ffmpeg" "$LIC/videoengine"
 cp "$SRC_DIR/COPYING.LGPLv2.1" "$SRC_DIR/LICENSE.md" "$LIC/ffmpeg/"
-cp "$ROOT/LICENSE" "$LIC/stashy-videoengine/"
+cp "$ROOT/LICENSE" "$LIC/videoengine/"
 cp "$DIST/BUILDINFO.txt" "$LIC/"
 LISTING=""
 for lib in $LIBRARIES; do
@@ -138,10 +138,10 @@ under the GNU Lesser General Public License, version 2.1 or later
 configuration in BUILDINFO.txt.
 
 The source code of FFmpeg and of every library below, with the scripts that
-build them, is published with stashy-videoengine $WHERE:
+build them, is published with videoengine $WHERE:
 $WHERE_URL
 A modified FFmpeg can be used by building that repository with the change
-and pointing the app's stashy-videoengine package at the result.
+and pointing the app's videoengine package at the result.
 
 This software is based in part on the work of the FreeType Team.
 

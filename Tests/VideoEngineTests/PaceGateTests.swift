@@ -85,7 +85,7 @@ struct PaceGateTests {
         return { gate.allows(produced: $0, playhead: $1, playerWaiting: $2) }
     }
 
-    /// The field case, with only the playhead reported, as Stashy does.
+    /// The field case, with only the playhead reported by the consumer.
     @Test func backwardSeekWithinTheRunKeepsPlaying() {
         var paced = Simulation(reportsWaiting: false, allows: Self.gated())
         paced.run(for: 300)

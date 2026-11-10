@@ -5,7 +5,7 @@ name: Swift tests
 # checked without rebuilding FFmpeg.
 #
 # Run manually from main with release_tag to cut a Swift-only release: the
-# tests and the Stashy consumer check pass first, then the new tag pins the
+# tests and the consumer check pass first, then the new tag pins the
 # XCFrameworks of the release Package.swift already uses.
 
 on:
@@ -86,13 +86,13 @@ jobs:
           done
           exit 1
 
-  stashy:
+  consumer:
     needs: test
     if: inputs.release_tag != ''
     uses: ./.github/workflows/consumer-check.yml
 
   release:
-    needs: [test, stashy]
+    needs: [test, consumer]
     if: github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

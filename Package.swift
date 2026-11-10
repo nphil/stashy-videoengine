@@ -8,7 +8,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "StashyVideoEngine",
+    name: "VideoEngine",
     platforms: [.iOS(.v26)],
     products: [
         .library(
@@ -24,32 +24,32 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "avutil",
-            url: "https://github.com/nphil/stashy-videoengine/releases/download/v2.0.0/libavutil.xcframework.zip",
+            url: "https://github.com/nphil/videoengine/releases/download/v2.0.0/libavutil.xcframework.zip",
             checksum: "ae1021ccf0298a572af24e6eea9a79c87d455cba031c21d859d3dc956b0a17dc"
         ),
         .binaryTarget(
             name: "avcodec",
-            url: "https://github.com/nphil/stashy-videoengine/releases/download/v2.0.0/libavcodec.xcframework.zip",
+            url: "https://github.com/nphil/videoengine/releases/download/v2.0.0/libavcodec.xcframework.zip",
             checksum: "3120a81f193382ee02d3be853e5c9337264b606c7b77b7b2968574de070be7ad"
         ),
         .binaryTarget(
             name: "avformat",
-            url: "https://github.com/nphil/stashy-videoengine/releases/download/v2.0.0/libavformat.xcframework.zip",
+            url: "https://github.com/nphil/videoengine/releases/download/v2.0.0/libavformat.xcframework.zip",
             checksum: "3186e3741b6e8ca203bf4be7fdbd70fe96366442b23b13ede78a6382120db60a"
         ),
         .binaryTarget(
             name: "avfilter",
-            url: "https://github.com/nphil/stashy-videoengine/releases/download/v2.0.0/libavfilter.xcframework.zip",
+            url: "https://github.com/nphil/videoengine/releases/download/v2.0.0/libavfilter.xcframework.zip",
             checksum: "9a0521ab9af8a689b128f8222387f54b44ae273f565118233422117bdc42dd30"
         ),
         .binaryTarget(
             name: "swscale",
-            url: "https://github.com/nphil/stashy-videoengine/releases/download/v2.0.0/libswscale.xcframework.zip",
+            url: "https://github.com/nphil/videoengine/releases/download/v2.0.0/libswscale.xcframework.zip",
             checksum: "c1eb687919c71002dc68282d4d31bb6c498c911a34abdfbbbc485be727e39d36"
         ),
         .binaryTarget(
             name: "swresample",
-            url: "https://github.com/nphil/stashy-videoengine/releases/download/v2.0.0/libswresample.xcframework.zip",
+            url: "https://github.com/nphil/videoengine/releases/download/v2.0.0/libswresample.xcframework.zip",
             checksum: "3f97647aba2064cc1ea58b2c7c00d918e2b7a34dabe05da6376dfa8d0e1f01a1"
         ),
         .target(

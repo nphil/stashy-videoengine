@@ -3,7 +3,7 @@
 # release.sh <tag>
 #
 # Run by the release jobs (build.yml, swift-tests.yml) on a workflow_dispatch
-# with release_tag set, after the build, the tests and the Stashy consumer
+# with release_tag set, after the build, the tests and the consumer
 # check passed. It:
 #   1. regenerates Package.swift pinned to the release's binaries,
 #   2. commits that manifest and pushes it to main,
@@ -33,7 +33,7 @@ TAG="${1:?usage: release.sh <tag>}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$ROOT/build/dist"
 WORK="$ROOT/build/release"
-REPO="${REPO:-nphil/stashy-videoengine}"
+REPO="${REPO:-nphil/videoengine}"
 FORCE="${FORCE:-0}"
 REUSE="${REUSE_BINARIES:-0}"
 NOTICES="LICENSES.zip SOURCES.txt BUILDINFO.txt"
@@ -112,7 +112,7 @@ else
   git "${BOT[@]}" commit -q -m "release $TAG: pin Package.swift to release checksums [skip ci]"
 fi
 if [ "$FORCE" = "1" ]; then TAG_FORCE="-f"; else TAG_FORCE=""; fi
-git "${BOT[@]}" tag $TAG_FORCE -a "$TAG" -m "stashy-videoengine $TAG (FFmpeg $FFMPEG, binaries $BINARIES_TAG)"
+git "${BOT[@]}" tag $TAG_FORCE -a "$TAG" -m "videoengine $TAG (FFmpeg $FFMPEG, binaries $BINARIES_TAG)"
 # Pushes made with the workflow token start no further workflow runs.
 git push origin HEAD:main
 git push $TAG_FORCE origin "refs/tags/$TAG"

@@ -1,7 +1,7 @@
 name: Stashy consumer check
 
-# Builds Stashy (nphil/stashy, read-only) against a candidate engine the way
-# Stashy's own CI does: macos-15, its newest Xcode, XcodeGen, an unsigned
+# Builds Stashy (nphil/stashy, read-only) against a candidate engine using
+# xcode-27, Xcode 27.1, XcodeGen, and an unsigned
 # Release build for generic iOS. Stashy's package entry is pointed at the
 # engine checkout, or at a published tag. Nothing is pushed to Stashy.
 
@@ -35,18 +35,18 @@ jobs:
         with:
           # The directory name is the local package's identity; it must match
           # the remote package's.
-          path: stashy-videoengine
+          path: videoengine
 
       - name: Fetch this run's binaries
         if: inputs.fresh_binaries
         uses: actions/download-artifact@v4
         with:
           name: dist
-          path: stashy-videoengine/build/dist
+          path: videoengine/build/dist
 
       - name: Point the engine manifest at them
         if: inputs.fresh_binaries
-        working-directory: stashy-videoengine
+        working-directory: videoengine
         run: |
           mkdir -p build/xcframeworks
           for z in build/dist/lib*.xcframework.zip; do ditto -x -k "$z" build/xcframeworks; done
@@ -62,24 +62,24 @@ jobs:
       - name: Point Stashy at the candidate
         working-directory: stashy/ios
         env:
-          ENGINE_PATH: ${{ github.workspace }}/stashy-videoengine
+          ENGINE_PATH: ${{ github.workspace }}/videoengine
           ENGINE_TAG: ${{ inputs.tag }}
         run: |
           git -C .. log -1 --format='Stashy %h %s'
           python3 - <<'PY'
           import os, re, sys
           text = open("project.yml").read()
-          m = re.search(r"^([ \t]+)stashy-videoengine:[ \t]*\n((?:\1[ \t]+\S.*\n)+)", text, re.M)
+          m = re.search(r"^([ \t]+)videoengine:[ \t]*\n((?:\1[ \t]+\S.*\n)+)", text, re.M)
           if not m:
-              sys.exit("no stashy-videoengine entry under packages: in ios/project.yml")
+              sys.exit("no videoengine entry under packages: in ios/project.yml")
           inner = re.match(r"[ \t]+", m.group(2)).group(0)
           tag = os.environ.get("ENGINE_TAG", "")
           if tag:
-              entry = inner + "url: https://github.com/nphil/stashy-videoengine.git\n" + inner + 'exactVersion: "' + tag.lstrip("v") + '"\n'
+              entry = inner + "url: https://github.com/nphil/videoengine.git\n" + inner + 'exactVersion: "' + tag.lstrip("v") + '"\n'
           else:
               entry = inner + "path: " + os.environ["ENGINE_PATH"] + "\n"
           open("project.yml", "w").write(text[:m.start(2)] + entry + text[m.end(2):])
-          print(m.group(1) + "stashy-videoengine:\n" + entry, end="")
+          print(m.group(1) + "videoengine:\n" + entry, end="")
           PY
 
       - name: Select Stashy's Xcode

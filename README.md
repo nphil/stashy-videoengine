@@ -1,10 +1,10 @@
-# stashy-videoengine
+# VideoEngine
 
 Prebuilt **FFmpeg XCFrameworks for iOS**, built in CI on macOS, published as
 checksummed GitHub Release assets and consumable as SwiftPM binary targets.
 
-These power [Stashy](https://github.com/nphil)'s on-device remux/transcode of
-exotic video (MKV / WebM / VP9 / AV1) into `AVPlayer`-playable fragmented MP4,
+These enable on-device remux/transcode of
+video (MKV / WebM / VP9 / AV1) into `AVPlayer`-playable fragmented MP4,
 using Apple's hardware VideoToolbox encoders — so a self-hosted media server
 doesn't have to transcode.
 
@@ -58,13 +58,13 @@ libpostproc).
 - **Bitstream filters:** all non-GPL (h264/hevc_mp4toannexb, aac_adtstoasc,
   extract_extradata, vp9_superframe, av1_metadata, dovi_rpu, dovi_split, …).
 - **Protocols:** file and pipe only. Remote input goes through the app's own
-  `AVIOContext` (Stashy uses URLSession range requests); FFmpeg's HTTP client
+  `AVIOContext` (for example, URLSession range requests); FFmpeg's HTTP client
   and TLS are not built.
 
 ### VideoEngine library (v1.4.0+)
 
 The `VideoEngine` product is the Swift layer that plays and downloads media on
-top of these binaries, shared by Stashy and Marquee (Swift 6, strict
+top of these binaries (Swift 6, strict
 concurrency):
 
 - `MediaProbe.probe` returns `MediaInfo`: container, streams, colour and HDR
@@ -87,21 +87,25 @@ The full API, adoption steps and device test sheets are in
 [docs/ENGINE.md](docs/ENGINE.md). A public API change is a major version, so
 apps pin an exact version.
 
-## Consuming from the Stashy app
+## Consuming from an app
 
 Add this repo as a Swift Package dependency (the `FFmpeg` product pulls in all
 six binary targets plus the required system frameworks):
 
 ```swift
-.package(url: "https://github.com/nphil/stashy-videoengine.git", exact: "2.0.0")
+.package(url: "https://github.com/nphil/videoengine.git", exact: "2.0.0")
 ```
 
 ```swift
-.target(name: "Stashy", dependencies: [
-    .product(name: "FFmpeg", package: "stashy-videoengine"),
-    .product(name: "VideoEngine", package: "stashy-videoengine"),  // v1.4.0+
+.target(name: "MediaApp", dependencies: [
+    .product(name: "FFmpeg", package: "videoengine"),
+    .product(name: "VideoEngine", package: "videoengine"),  // v1.4.0+
 ])
 ```
+
+Migration: the canonical repository is `https://github.com/nphil/videoengine`
+and the Swift package identity is `videoengine`. Products and APIs are
+unchanged; release history and tags are preserved.
 
 Then in Swift:
 
@@ -135,7 +139,7 @@ xcframeworks each carry their own top-level module map.
 ## How it's built
 
 Builds and tests run on GitHub Actions `xcode-27` runners (macOS 27, Xcode 27.1,
-iOS 27 SDK); the Stashy consumer check runs on `macos-15` like Stashy's own CI.
+iOS 27 SDK); the consumer check also runs on `xcode-27`.
 There is no local Mac in the loop.
 
 ```
@@ -149,21 +153,21 @@ scripts/swift-test.sh         # build the package, run its tests on a simulator
 scripts/release.sh            # pin Package.swift, tag, create the Release
 .github/workflows/build.yml          # binaries
 .github/workflows/swift-tests.yml    # Swift package, every branch
-.github/workflows/consumer-check.yml # Stashy builds against the engine
+.github/workflows/consumer-check.yml # consumer app builds against the engine
 ```
 
 - **Push to `main`** touching the build → builds, verifies, packages sources
   and licences, uploads everything as the `dist` workflow artifact, then
-  builds Stashy against those binaries.
+  builds the consumer app against those binaries.
 - **Run the build workflow manually with a `release_tag`** → all of the
-  above, then (only if Stashy built) regenerates `Package.swift` pinned to this
+  above, then (only if the consumer built) regenerates `Package.swift` pinned to this
   build's SHA-256 checksums, commits it to `main`, tags that commit, creates
-  the GitHub Release, and builds Stashy once more against the published tag.
+  the GitHub Release, and builds the consumer once more against the published tag.
 - **Push touching `Sources/`, `Tests/` or `Package.swift`** (any branch) → the
   Swift tests workflow builds the package against the binaries `Package.swift`
   pins and runs its tests on an iOS simulator, without rebuilding FFmpeg.
 - **Run the Swift tests workflow manually with a `release_tag`** → a Swift-only
-  release: tests, the Stashy check, then a tag whose `Package.swift` keeps the
+  release: tests, the consumer check, then a tag whose `Package.swift` keeps the
   XCFrameworks of the release it already pins.
 
 `Package.swift` is generated and follows the tree: after adding or removing a

@@ -117,14 +117,14 @@ jobs:
           path: build/dist
           if-no-files-found: error
 
-  stashy:
+  consumer:
     needs: build
     uses: ./.github/workflows/consumer-check.yml
     with:
       fresh_binaries: true
 
   release:
-    needs: [build, stashy]
+    needs: [build, consumer]
     if: github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
